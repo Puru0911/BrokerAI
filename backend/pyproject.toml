@@ -1,0 +1,30 @@
+[project]
+name = "brokerai-backend"
+version = "0.1.0"
+description = "BrokerAI backend (FastAPI + LangGraph)"
+requires-python = ">=3.11"
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.30.0",
+  "pydantic>=2.7.0",
+  "pydantic-settings>=2.3.0",
+  "sqlalchemy>=2.0.0",
+  "greenlet>=3.0.3",
+  "asyncpg>=0.29.0",
+  "chromadb>=1.0.0",
+  "httpx>=0.27.0",
+  "langchain-core>=0.3.0",
+  "langchain-openai>=0.2.0",
+  "langgraph>=0.2.0",
+  "python-dotenv>=1.0.1",
+]
+
+[tool.uv]
+dev-dependencies = [
+  "pytest>=8.0.0",
+  "httpx>=0.27.0",
+  "ruff>=0.6.0",
+]
+
+[tool.pytest.ini_options]
+pythonpath = ["."]
