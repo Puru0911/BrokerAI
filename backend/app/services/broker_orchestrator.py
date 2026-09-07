@@ -10,7 +10,6 @@ from pydantic import BaseModel, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.config import settings
 from app.db.models import (
     BrokerDecisionLog,
     BrokerMatch,
@@ -20,17 +19,18 @@ from app.db.models import (
     BrokerSession,
 )
 from app.services.broker_intake import WELCOME_MESSAGE, create_title, run_intake_decision
-from app.services.broker_matching import evaluate_and_start_mediations
-from app.services.broker_matching import ACTIVE_MEDIATION_STATUSES
-from app.services.broker_mediation import (
-    find_active_mediation_for_session,
-    handle_mediation_reply,
+from app.services.broker_match_graph import (
+    process_next_matches_for_request,
+    run_match_graph_for_message,
+    run_match_graph_for_request,
 )
-from app.services.broker_rag import index_request, retrieve_similar_requests
+from app.services.broker_mediation_graph import run_mediation_graph_for_message
+from app.services.broker_rag import index_request
 from app.services.broker_request_builder import upsert_request_from_decision
-from app.services.structured_llm import (
-    invoke_structured_openrouter_model,
-    is_llm_configured,
+from app.services.broker_workflow import (
+    MATCH_ACTIVE_STATUSES,
+    clear_match_workflows,
+    get_active_workflow_match,
 )
 
 logger = logging.getLogger(__name__)
@@ -39,7 +39,7 @@ ORCHESTRATOR_VERSION = "broker-master-orchestrator.v1"
 
 
 class BrokerOperationDecision(BaseModel):
-    operation: Literal["intake", "mediate"]
+    operation: Literal["intake_graph", "matching_graph", "mediation_graph"]
     decision_summary: str = Field(
         default="",
         max_length=500,
@@ -52,7 +52,9 @@ class BrokerOrchestratorState(TypedDict, total=False):
     broker_session: BrokerSession
     content: str
     user_message: BrokerMessage
+    active_matching: tuple[BrokerMatch, BrokerRequest] | None
     active_mediation: tuple[BrokerMatch, BrokerRequest] | None
+    session_request: BrokerRequest | None
     operation_decision: BrokerOperationDecision
     assistant_messages: list[BrokerMessage]
 
@@ -143,7 +145,7 @@ async def process_stale_mediations(db: AsyncSession, limit: int = 50) -> list[Br
     result = await db.execute(
         select(BrokerMatch)
         .where(
-            BrokerMatch.status.in_(ACTIVE_MEDIATION_STATUSES),
+            BrokerMatch.status.in_(MATCH_ACTIVE_STATUSES),
             BrokerMatch.expires_at.is_not(None),
             BrokerMatch.expires_at <= datetime.now(UTC),
         )
@@ -153,6 +155,7 @@ async def process_stale_mediations(db: AsyncSession, limit: int = 50) -> list[Br
     stale_matches = list(result.scalars().all())
     for broker_match in stale_matches:
         broker_match.status = "expired"
+        await clear_match_workflows(db, broker_match)
         db.add(
             BrokerMediationEvent(
                 match_id=broker_match.id,
@@ -166,12 +169,7 @@ async def process_stale_mediations(db: AsyncSession, limit: int = 50) -> list[Br
         if source_request is None or source_request.embedding_status != "embedded":
             continue
         try:
-            matches = await retrieve_similar_requests(
-                db,
-                source_request,
-                settings.MATCH_EXPORT_AUTO_LIMIT,
-            )
-            await evaluate_and_start_mediations(db, source_request, matches)
+            await process_next_matches_for_request(db, source_request)
         except Exception as exc:
             logger.warning(
                 "Next-match processing after stale mediation failed",
@@ -186,6 +184,7 @@ def _build_orchestrator_graph():
     graph.add_node("prepare_context", _prepare_context_node)
     graph.add_node("master_router", _master_router_node)
     graph.add_node("intake", _intake_node)
+    graph.add_node("matching", _matching_node)
     graph.add_node("mediation", _mediation_node)
     graph.set_entry_point("prepare_context")
     graph.add_edge("prepare_context", "master_router")
@@ -194,10 +193,12 @@ def _build_orchestrator_graph():
         _route_after_master,
         {
             "intake": "intake",
+            "matching": "matching",
             "mediation": "mediation",
         },
     )
     graph.add_edge("intake", END)
+    graph.add_edge("matching", END)
     graph.add_edge("mediation", END)
     return graph.compile()
 
@@ -207,7 +208,27 @@ async def _prepare_context_node(
 ) -> BrokerOrchestratorState:
     db = state["db"]
     broker_session = state["broker_session"]
-    active_mediation = await find_active_mediation_for_session(db, broker_session)
+    session_request = await _get_session_request(db, broker_session.id)
+    active_matching = (
+        (
+            await get_active_workflow_match(db, session_request, "matching"),
+            session_request,
+        )
+        if session_request is not None
+        else None
+    )
+    if active_matching and active_matching[0] is None:
+        active_matching = None
+    active_mediation = (
+        (
+            await get_active_workflow_match(db, session_request, "mediation"),
+            session_request,
+        )
+        if session_request is not None
+        else None
+    )
+    if active_mediation and active_mediation[0] is None:
+        active_mediation = None
     user_message = BrokerMessage(
         session_id=broker_session.id,
         role="user",
@@ -217,7 +238,9 @@ async def _prepare_context_node(
     await db.flush()
     return {
         **state,
+        "active_matching": active_matching,
         "active_mediation": active_mediation,
+        "session_request": session_request,
         "user_message": user_message,
     }
 
@@ -225,48 +248,49 @@ async def _prepare_context_node(
 async def _master_router_node(
     state: BrokerOrchestratorState,
 ) -> BrokerOrchestratorState:
-    active_mediation = state.get("active_mediation")
-    if active_mediation is None:
+    session_request = state.get("session_request")
+    if state.get("active_matching") is not None:
         decision = BrokerOperationDecision(
-            operation="intake",
-            decision_summary="No active mediation was found for this session.",
+            operation="matching_graph",
+            decision_summary=(
+                "The request has an active matching workflow pointer for the current match."
+            ),
         )
-    elif not is_llm_configured():
+    elif state.get("active_mediation") is not None:
         decision = BrokerOperationDecision(
-            operation="mediate",
-            decision_summary="Active mediation exists; routed without LLM because the model is not configured.",
+            operation="mediation_graph",
+            decision_summary=(
+                "The request has an active mediation workflow pointer for the current match."
+            ),
+        )
+    elif session_request is None:
+        decision = BrokerOperationDecision(
+            operation="intake_graph",
+            decision_summary="No structured request was found for this session.",
+        )
+    elif session_request.status == "closed":
+        decision = BrokerOperationDecision(
+            operation="intake_graph",
+            decision_summary="The request is closed, so the message is handled as general intake context.",
         )
     else:
-        broker_match, party_request = active_mediation
-        decision = await invoke_structured_openrouter_model(
-            parser_model=BrokerOperationDecision,
-            system_prompt=_master_orchestrator_prompt(),
-            human_payload={
-                "orchestrator_version": ORCHESTRATOR_VERSION,
-                "session": {
-                    "id": state["broker_session"].id,
-                    "status": state["broker_session"].status,
-                    "summary": state["broker_session"].summary,
-                },
-                "user_message": state["user_message"].content,
-                "active_mediation": {
-                    "match_id": broker_match.id,
-                    "status": broker_match.status,
-                    "party_request_id": party_request.id,
-                    "outreach_strategy": broker_match.outreach_strategy,
-                },
-                "task": (
-                    "Choose whether this user message should continue the active "
-                    "mediation or be treated as ordinary request intake."
-                ),
-            },
-            temperature=0.05,
+        decision = BrokerOperationDecision(
+            operation="intake_graph",
+            decision_summary=(
+                "No active workflow pointer exists, so the message updates or starts "
+                "the user's canonical broker request."
+            ),
         )
     return {**state, "operation_decision": decision}
 
 
 def _route_after_master(state: BrokerOrchestratorState) -> str:
-    return "mediation" if state["operation_decision"].operation == "mediate" else "intake"
+    operation = state["operation_decision"].operation
+    if operation == "matching_graph":
+        return "matching"
+    if operation == "mediation_graph":
+        return "mediation"
+    return "intake"
 
 
 async def _intake_node(state: BrokerOrchestratorState) -> BrokerOrchestratorState:
@@ -300,24 +324,54 @@ async def _intake_node(state: BrokerOrchestratorState) -> BrokerOrchestratorStat
     return {**state, "assistant_messages": [assistant_message]}
 
 
-async def _mediation_node(state: BrokerOrchestratorState) -> BrokerOrchestratorState:
-    active_mediation = state.get("active_mediation")
-    if active_mediation is None:
-        return await _intake_node(state)
-    broker_match, party_request = active_mediation
+async def _matching_node(state: BrokerOrchestratorState) -> BrokerOrchestratorState:
     try:
-        assistant_messages = await handle_mediation_reply(
+        assistant_messages = await run_match_graph_for_message(
             db=state["db"],
             broker_session=state["broker_session"],
             user_message=state["user_message"],
-            broker_match=broker_match,
-            party_request=party_request,
+            active_matching=state.get("active_matching"),
+        )
+    except Exception as exc:
+        logger.warning(
+            "BrokerAI matching handling failed",
+            exc_info=exc,
+            extra={
+                "session_id": state["broker_session"].id,
+                "active_matching": bool(state.get("active_matching")),
+            },
+        )
+        assistant_messages = [
+            BrokerMessage(
+                session_id=state["broker_session"].id,
+                role="assistant",
+                content=(
+                    "I noted your reply, but I could not safely continue matching "
+                    "right now. Please try again once the broker model is available."
+                ),
+            )
+        ]
+        state["db"].add_all(assistant_messages)
+        await state["db"].flush()
+    return {**state, "assistant_messages": assistant_messages}
+
+
+async def _mediation_node(state: BrokerOrchestratorState) -> BrokerOrchestratorState:
+    try:
+        assistant_messages = await run_mediation_graph_for_message(
+            db=state["db"],
+            broker_session=state["broker_session"],
+            user_message=state["user_message"],
+            active_mediation=state.get("active_mediation"),
         )
     except Exception as exc:
         logger.warning(
             "BrokerAI mediation handling failed",
             exc_info=exc,
-            extra={"match_id": broker_match.id},
+            extra={
+                "session_id": state["broker_session"].id,
+                "active_mediation": bool(state.get("active_mediation")),
+            },
         )
         assistant_messages = [
             BrokerMessage(
@@ -366,6 +420,8 @@ async def _process_ready_request(
     broker_session: BrokerSession,
     intake_run,
 ) -> BrokerRequest | None:
+    if intake_run.decision.status in {"closed", "paused"}:
+        return await _process_request_lifecycle_decision(db, broker_session, intake_run)
     if intake_run.decision.status != "ready_for_matching":
         return None
     broker_request = await upsert_request_from_decision(
@@ -378,18 +434,50 @@ async def _process_ready_request(
     if broker_request.embedding_status != "embedded":
         return broker_request
     try:
-        matches = await retrieve_similar_requests(
-            db,
-            broker_request,
-            settings.MATCH_EXPORT_AUTO_LIMIT,
-        )
-        await evaluate_and_start_mediations(db, broker_request, matches)
+        await run_match_graph_for_request(db, broker_request)
     except Exception as exc:
         logger.warning(
             "Automatic match retrieval/evaluation/mediation failed",
             exc_info=exc,
             extra={"request_id": broker_request.id},
         )
+    return broker_request
+
+
+async def _process_request_lifecycle_decision(
+    db: AsyncSession,
+    broker_session: BrokerSession,
+    intake_run,
+) -> BrokerRequest | None:
+    broker_request = await _get_session_request(db, broker_session.id)
+    if broker_request is None:
+        return None
+
+    broker_request.status = intake_run.decision.status
+    broker_request.active_graph = None
+    broker_request.active_match_id = None
+    if intake_run.decision.status == "closed":
+        result = await db.execute(
+            select(BrokerMatch).where(
+                (
+                    (BrokerMatch.source_request_id == broker_request.id)
+                    | (BrokerMatch.candidate_request_id == broker_request.id)
+                ),
+                BrokerMatch.status.in_(MATCH_ACTIVE_STATUSES | {"discovered", "qualified", "accepted"}),
+            )
+        )
+        for broker_match in result.scalars().all():
+            broker_match.status = "closed"
+            await clear_match_workflows(db, broker_match, next_status="closed")
+            db.add(
+                BrokerMediationEvent(
+                    match_id=broker_match.id,
+                    session_id=broker_request.session_id,
+                    user_id=broker_request.user_id,
+                    event_type="request_closed",
+                    payload={"reason": "master_request_lifecycle"},
+                )
+            )
     return broker_request
 
 
@@ -428,20 +516,4 @@ def _decision_log(
         response_payload=intake_run.response_payload,
         error=intake_run.error,
         latency_ms=intake_run.latency_ms,
-    )
-
-
-def _master_orchestrator_prompt() -> str:
-    return (
-        "You are BrokerAI's master orchestrator. BrokerAI is an autonomous broker "
-        "over intent state, matches, mediation, and negotiation. Decide whether the "
-        "latest user message belongs to the active mediation or should be treated as "
-        "ordinary intake for the request.\n\n"
-        "Route to mediate when the message responds to the active match, asks a "
-        "question about the matched party, accepts, rejects, negotiates, updates terms "
-        "for that match, or asks BrokerAI to relay something. Route to intake only "
-        "when the user is clearly starting or revising a separate broker request rather "
-        "than replying to the active mediation.\n\n"
-        "Return JSON only. decision_summary must be audit-safe and must not include "
-        "hidden reasoning."
     )

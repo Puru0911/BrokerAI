@@ -282,6 +282,8 @@ def _request_metadata(
         "session_id": broker_request.session_id,
         "user_id": broker_request.user_id,
         "status": broker_request.status,
+        "active_graph": broker_request.active_graph,
+        "active_match_id": broker_request.active_match_id,
         "request_type": broker_request.request_type,
         "perspective": profile.perspective,
         "embedding_status": "embedded",
@@ -362,6 +364,8 @@ def _request_export_payload(broker_request: BrokerRequest) -> dict[str, Any]:
         "title": broker_request.title,
         "summary": broker_request.summary,
         "embedding_status": broker_request.embedding_status,
+        "active_graph": broker_request.active_graph,
+        "active_match_id": broker_request.active_match_id,
         "structured_data": broker_request.structured_data,
     }
 

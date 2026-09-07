@@ -11,6 +11,9 @@
 backend/.env
 backend/.env.*
 !backend/.env.example
+backend-agent/.env
+backend-agent/.env.*
+!backend-agent/.env.example
 frontend/.env
 frontend/.env.*
 !frontend/.env.example
@@ -29,6 +32,8 @@ venv/
 
 # Backend local runtime data
 backend/data/
+backend-agent/data/
+backend-agent/logs/
 
 # Node / Next
 node_modules/

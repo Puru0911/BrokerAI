@@ -1,111 +1,158 @@
 # BrokerAI — Project Context
 
-Last updated: 2026-05-21
+Last updated: 2026-09-06
 
 ## MVP Goal
 
 Build a conversational AI broker that:
 
-- Collects user needs/offers via chat
-- Stores requests in a vector store
-- Matches compatible parties
-- Mediates follow-ups while keeping user privacy
+- Understands any request that needs a counterpart
+- Saves a living brief, not a category form
+- Finds compatible people with RAG
+- Qualifies and mediates in private
+- Shares contacts only after both sides accept
 
-## Current State
+## Active worktree
 
-### Backend
+Until the user says otherwise:
 
-FastAPI skeleton exists with a health endpoint.
+- Agentic backend work goes in **`backend-agent/`** only. Do not edit `backend/` (the old graph prototype).
+- **`frontend/`** may be edited.
+- Do not change other trees unless asked.
 
-- `backend/app/main.py` — app factory + router
-- `backend/app/api/routes/health.py` — `GET /health`
-- `backend/app/core/config.py` — settings via `.env`
-- `backend/app/db/models/user_profile.py` — Postgres-backed user profile table keyed by Supabase user id
-- `backend/app/api/routes/users.py` — `GET /users/me` and `POST /users/me` for first-login profile collection
-- `backend/app/db/models/broker_session.py` — broker session and message persistence
-- `backend/app/api/routes/broker.py` — authenticated broker session/message APIs
-- `backend/app/services/broker_request_builder.py` — converts ready broker decisions into structured request JSON
-- `broker_requests` table — one canonical structured request document per session for MVP, stored in Postgres JSONB
-- `backend/app/services/broker_rag.py` — LLM-prepared semantic request indexing and Chroma-backed candidate retrieval
-- `backend/app/services/broker_orchestrator.py` — top-level LangGraph router that decides whether a user message should continue intake or active mediation, and triggers indexing/retrieval/match evaluation when a request is ready
-- `backend/app/services/broker_matching.py` — LLM match evaluator and initial outreach strategist for retrieved request pairs
-- `backend/app/services/broker_mediation.py` — active mediation lookup and reply handling for matched parties
-- `backend/app/services/structured_llm.py` — shared OpenRouter structured-output adapter for intake and RAG LLM tasks
-- `backend/app/services/broker_intake.py` — LangGraph broker orchestration with master broker and clarifier nodes
-- `broker_decision_logs` table — stores provider/model/status/decision summary/errors/latency for LLM decisions; logs audit summaries, not hidden chain-of-thought
-- `broker_matches` and `broker_mediation_events` tables — durable match lifecycle state and append-only mediation audit events
-- `broker_party_connections` table — durable contact-connection record created after an accepted match when a party presses Connect on a shared contact card
-- `backend/app/services/broker_contact.py` — contact-sharing service that creates structured contact-card messages for both accepted parties and records connection events
+## How to apply a scenario report
 
-LLM orchestration:
+A user scenario is an example of a product rule, not a patch target. Do not encode the example (domain, fields, wording) into code or prompts. Read it as a system-wide behavior, design the general rule for every use case, then apply the smallest general fix. Do not add special-case machinery for one conversation.
 
-- Primary provider: OpenRouter through LangChain `ChatOpenAI` compatibility. Groq is also supported through its OpenAI-compatible API for `llama-3.3-70b-versatile`, and Gemini is supported through Google's OpenAI-compatible endpoint for `gemini-2.5-flash`.
-- Orchestration: a top-level BrokerAI master graph delegates user messages to intake or mediation. The intake subgraph uses `prepare_context`, `master_broker`, optional `clarifier`, and `finalize_decision` nodes.
-- Config: `LLM_PROVIDER`, `LLM_REQUEST_TIMEOUT_SECONDS`, `OPENROUTER_API_KEY`, `OPENROUTER_BASE_URL`, `LLM_MODEL`, `GROQ_API_KEY`, `GROQ_BASE_URL`, `GROQ_LLM_MODEL`, `GEMINI_API_KEY`, `GEMINI_BASE_URL`, `GEMINI_LLM_MODEL`.
-- The master broker node owns routing and session state: it decides whether the request needs clarification or is `ready_for_matching`.
-- The clarifier node only runs when delegated by the master and writes the next user-facing clarification message.
-- Clarification is a loop across conversation turns: the master may keep delegating until enough information exists, but each clarifier turn should focus on the most useful next slice of context and avoid overwhelming the user.
-- Prompt posture: prompts define agent roles and orchestration contracts without over-scripting the conversation. The master prompt produces general-purpose request state and chooses whether matching can begin; the clarifier prompt follows that delegation in natural broker language while keeping intake trustworthy and privacy-aware.
-- Intake routing should stay master-led and generalist. Do not add category-specific code guards for clarification decisions unless the product explicitly needs a deterministic policy outside model judgment.
-- If no API key is configured or the LLM graph fails, BrokerAI records the failure and returns an LLM-unavailable intake response rather than using hardcoded field-follow-up rules.
-- When the master marks a session `ready_for_matching`, BrokerAI upserts a `broker_requests` row with normalized metadata and `structured_data` JSONB.
-- Before indexing, the RAG layer asks the configured OpenRouter LLM to produce a detailed privacy-aware semantic profile for the ready request and stores that profile under `structured_data.semantic_retrieval`.
-- Chroma embeds the profile's semantic document into a local persistent request collection, records embedding status on `broker_requests`, and retrieves candidate requests through `/broker/requests/{request_id}/matches`.
-- Before a vector query, the RAG layer asks the LLM for a counterparty-oriented semantic retrieval plan; Chroma embeds that query text and returns nearest candidates for downstream ranking.
-- After retrieval, the matching evaluator judges each pair, creates `broker_matches`, skips weak/non-complementary candidates, and sends first in-app BrokerAI outreach messages according to its `source_first`, `candidate_first`, or `both` strategy.
-- Previously skipped match pairs are eligible for re-evaluation when either underlying request has changed after the skip. This lets BrokerAI recover when a user later updates a constraint or offer that makes an earlier non-match viable.
-- When a user replies in a session with active mediation, the top-level orchestrator routes the message to mediation instead of intake. The mediation reply handler classifies accept/reject/question/update/other, updates match state, writes events, and relays messages to the other party when appropriate.
-- Mediation reply handling includes prior mediation event history in the LLM context, stores negotiated term updates under each request's `structured_data.mediation_terms`, and keeps accepted matches routable through mediation until final coordination/closure.
-- Mediation decisions include an explicit `agreement_reached` flag so accepting another party's concrete proposal can trigger the accepted-match flow without forcing the proposing party through a redundant confirmation turn.
-- Once both sides accept the core terms of a mediated match, BrokerAI automatically shares privacy-aware contact-card messages with both parties. The card is structured JSON rendered by the frontend, and its Connect action creates a durable `broker_party_connections` record that can back direct party-to-party chat.
-- Stale mediation can be processed through `/broker/mediations/process-stale`; timed-out active matches are expired and BrokerAI attempts the next candidate for the source request.
-- The match endpoint returns a request preview for the MVP. The full JSONB payload remains an internal matching artifact until BrokerAI adds LLM ranking, privacy policy, and mediation between parties.
-- Architecture boundary: `broker_sessions` and `broker_messages` preserve conversation history, `broker_requests` is the canonical matchable request document, and Chroma is a semantic retrieval index rather than the system of record.
-- Embedding contract for the MVP: `broker_rag.py` explicitly configures Chroma's `DefaultEmbeddingFunction`, which uses the local `all-MiniLM-L6-v2` model. Each request is indexed as one LLM-produced semantic document rather than chunks because an accepted broker request is an atomic match unit at this stage.
-- Temporary testing flow: after a request is embedded, BrokerAI automatically runs semantic retrieval and writes a local JSON artifact to `MATCH_EXPORT_DIR` using the source request title as the filename. This is for inspecting semantic retrieval plans and candidate matches before the real match lifecycle exists. The automatic export limit is controlled by `MATCH_EXPORT_AUTO_LIMIT`.
+## Current architecture
 
-Run locally:
+The product backend is `backend-agent/`: one LangChain tool-calling agent, RAG over briefs, and Python tools for side effects. There is no graph router.
 
-- `cd backend && uv run uvicorn app.main:app --reload`
+```
+user message
+  → FastAPI chat route
+  → Broker Agent (ChatGroq / ChatOpenAI.bind_tools loop)
+       think / save_request / update_request / search_counterparties /
+       evaluate_pair / open_match / message_party / update_notebook /
+       close_match / accept_match / share_contacts
+  → Postgres + Chroma
+  → reply to the current user (and optionally a named party via message_party)
+```
 
-### Frontend
+One agent talks to every party. Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(to=source|candidate)` writes only into the other party's chat; this session's bubble is the final reply. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
 
-Next.js (App Router) skeleton exists with Tailwind and Supabase Auth login flow.
+`backend/` is the earlier graph prototype. It is not the active architecture.
 
-Auth flow:
+**Grok / future sessions:** simulate and implement against `backend-agent/` only. `backend/` uses LangGraph graphs; `backend-agent/` uses LangChain tools and can call any tool on any turn from conversation.
 
-- `frontend/app/login/page.tsx` — Google OAuth + email magic link
-- `frontend/app/login/actions.ts` — local-only temporary sign-in for Supabase email rate limit fallback
-- `frontend/lib/auth/dev-session.ts` — local dev session cookie helper
-- `frontend/app/auth/callback/route.ts` — exchanges auth code for session, then redirects
-- `frontend/middleware.ts` — protects `/app/*` and `/profile/*`, redirects to `/login` if unauthenticated
-- `frontend/app/app/page.tsx` — protected chat workspace after login
-- `frontend/app/profile/page.tsx` — first-login user profile form before chat access
-- `frontend/components/profile/create-profile-form.tsx` — collects name, location, and mobile number
-- `frontend/components/chat/broker-chat.tsx` — responsive chat UI with live broker sessions, messages, new-session creation, and sign out
-- `frontend/lib/api/broker.ts` — client API helper for broker session orchestration
-- Structured BrokerAI contact-card messages render as contact detail cards in chat with a Connect button. The current Connect action creates the backend party-connection record; direct party-to-party messaging UI is the next layer on top of that record.
-- `frontend/public/brokerai-logo.jpg` — BrokerAI logo asset used on login and chat screens
-- New users do not get an empty broker session during chat boot. The chat renders a local BrokerAI welcome message before any session exists, and the first submitted request creates the first session with a request-based title and intake decision in one API call.
-- The chat shell is fixed to the viewport; session history and chat messages scroll inside their own panes. Sending a message is optimistic: the user's message appears immediately, followed by a BrokerAI thinking indicator until the API response returns.
+## Backend (`backend-agent/`)
 
-Local development fallback:
+FastAPI app with the same chat contract the Next.js client already uses.
 
-- If Supabase magic-link email is rate limited, enter an email on `/login` and use **Temporary local sign in**.
-- The backend accepts `dev:<email>` bearer tokens only when `ENV=local`.
-- This bypass is for local development only and must not be used in production.
+- `app/main.py` — app factory
+- `app/api/routes/broker.py` — sessions, messages, attachments, matches, connect
+- `app/api/routes/users.py` — `GET/POST /users/me`
+- `app/agents/runtime.py` — tool-calling loop
+- `app/agents/prompts.py` — broker persona and tool contracts
+- `app/agents/tools/` — request, search, match, and contact tools
+- `app/rag/` — Chroma index + semantic profile/query helpers
+- `app/services/orchestrator.py` — session create, message handle, stale matches
+- `app/services/contact.py` — contact cards after accept
 
-Environment variables:
+### Data
 
-- `frontend/.env.example` — `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `NEXT_PUBLIC_BACKEND_URL`
-- `backend/.env.example` — basic backend config
+New tables so this service can share Postgres with the old folder without colliding:
 
-Run locally:
+- `agent_sessions`, `agent_messages`
+- `agent_requests` — one living brief per session
+- `agent_matches` — a pair of briefs plus `notebook` (shared facts and outstanding question)
+- `agent_events` — append-only match audit
+- `agent_connections` — created when a party presses Connect
+- `agent_attachments` — files and links on a session (`kind` file|url, `share_class` pending|public|personal)
+- `agent_attachment_requests` — agent asked this user to upload something
+- `agent_attachment_grants` — permission to share a personal item on a match
+- `agent_attachment_shares` — item delivered to the other party
 
-- `cd frontend && npm i && npm run dev`
+Files live in a private Supabase Storage bucket (`broker-attachments`), path `{user_id}/{session_id}/{attachment_id}/filename`. The backend uses the service role and issues short-lived signed URLs after authz. Downloads always require a Bearer token; “public” means shareable with a match, not world-readable.
 
-## Next Modules (Proposed)
+New items start `pending`. The agent classifies from conversation history, caption, and filename on the upload turn (`classify_attachment`). `public` (resume, listing photos, portfolio) can be shared into an open match. `personal` needs a grant (Allow in UI or `record_share_grant` after the user agrees). Pending is a last resort if the agent cannot tell.
 
-- Add frontend visibility for active mediations and match status.
-- Build direct party-to-party chat UI on top of accepted `broker_party_connections`.
-- Add migrations for evolving Postgres tables beyond the current `create_all` bootstrap.
+`user_profiles` is shared with the original backend.
+
+Statuses are intentionally short:
+
+- Request: `open` | `paused` | `closed`
+- Match: `open` | `accepted` | `connected` | `closed` (`close_reason` is `skip`, `reject`, `withdraw`, `expired`, or `request_closed`)
+- Session: `open` | `closed`
+
+`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). `message_party` writes into the named party's chat (`source` or `candidate`); questions for the current user belong in the final reply.
+
+`waiting_match_id` on a request is attention (“we last asked this person about this match”). It does not route the next message to a different engine.
+
+### Agent tools
+
+- `think` — private plan for the turn (custom, every model)
+- `save_request` — full create/rewrite of the brief
+- `update_request` — patch only changed fields; index only when no further questions for this user
+- `index_request` — make the brief searchable; not while waiting on this user
+- `search_counterparties` — anonymized RAG candidates
+- `evaluate_pair` — pre-outreach gate on one retrieved pair; `open_match` only when roles are complementary, `skip` on same-side/hard-stop, screening questions come after open
+- `open_match` — start working a pair (usually one open match at a time); seeds the match notebook
+- `message_party` — write into `source` or `candidate` chat; sets outstanding when a reply is expected
+- `update_notebook` — shared terms plus agent_note/next_action for later turns (not a human message)
+- `close_match` — skip / reject / withdraw
+- `accept_match` — this user agreed; cards share when both have
+- `share_contacts` — only after accept
+- `get_match_events` — extra audit history plus notebook
+- `request_attachment` — upload prompt in this chat
+- `classify_attachment` — public vs personal from conversation, not file bytes
+- `share_attachment` — deliver to the other party, or ask permission if personal
+- `record_share_grant` — chat consent for a personal share
+
+Python still enforces: no matching yourself, no contacts before accept, identity redaction in cross-party text before accept, max one open match, skip-reopen only after a brief changes.
+
+### LLM
+
+OpenRouter (primary) and Gemini go through LangChain `ChatOpenAI`. Groq uses `ChatGroq` with `reasoning_format=parsed` so Qwen thinking stays in `reasoning_content` and tools come back as JSON `tool_calls` (not XML). The agent uses native tool calling. Semantic indexing, retrieval planning, and pair evaluation use structured JSON helpers.
+
+If no API key is configured, the agent holds the request and says the model is unavailable.
+
+When `ENV` is `local`, `dev`, or `development`, the agent loads compact prompt copies (`BROKER_SYSTEM_PROMPT_DEV` and matching tool/index/search/evaluator strings) so the same tools and rules fit a smaller token budget. Other environments keep the full prompts.
+
+Agent debug logs go to `backend-agent/logs/brokerai.log` (and the console). There is no decision-log table.
+
+### RAG
+
+Chroma persists under `backend-agent/data/chroma`, collection `agent_requests`. Each indexed brief is one semantic document produced by the LLM. Search is semantic only: it plans a counterpart-oriented query, retrieves nearest neighbors from Chroma with no metadata filters, then hydrates open briefs that belong to someone else.
+
+## Frontend
+
+The chat client talks to `/broker/sessions` and `/broker/sessions/{id}/messages`. Contact cards still use `kind: broker_contact_card` and Connect hits `/broker/matches/{id}/connect`.
+
+Files and links use the composer paperclip / link control. Structured assistant cards: `broker_attachment_request`, `broker_attachment_permission`, `broker_attachment_share`.
+
+Visual system (2026-09-05): warm paper canvas, Plus Jakarta Sans, pine accent, nameless SVG mark (two overlapping circles + center node — no product name). Thinking indicator shows only while waiting for an agent reply after a user chat turn, delayed ~280ms. Composer is an auto-growing textarea (Enter sends, Shift+Enter newline).
+
+Point `NEXT_PUBLIC_BACKEND_URL` at the agent backend to use it.
+
+## Run
+
+```bash
+cd backend-agent
+uv sync
+uv run uvicorn app.main:app --reload
+```
+
+```bash
+cd frontend
+npm run dev
+```
+
+Local auth: frontend temporary sign-in; backend accepts `dev:<email>` when `ENV=local`.
+
+## Next
+
+- Frontend visibility for open matches
+- Direct party-to-party chat on `agent_connections`
+- Postgres migrations instead of `create_all`
+- Multi-party deals beyond 1:1 pairs

@@ -6,6 +6,7 @@ import {
   createProfile,
   type CreateProfileState
 } from "@/app/profile/actions"
+import { Spinner } from "@/components/icons"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
 
@@ -20,20 +21,20 @@ export function CreateProfileForm({ email }: { email: string }) {
   )
 
   return (
-    <form action={formAction} className="mt-8 space-y-5">
-      <div className="rounded-md border border-slate-200 bg-slate-50 px-3 py-2 text-sm text-slate-600">
+    <form action={formAction} className="space-y-5">
+      <div className="rounded-xl bg-canvas px-3 py-2 text-sm text-muted">
         Signed in as {email}
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium text-slate-700" htmlFor="name">
+        <label className="text-sm font-medium text-ink" htmlFor="name">
           Name
         </label>
         <Input id="name" name="name" autoComplete="name" required />
       </div>
 
       <div className="space-y-2">
-        <label className="text-sm font-medium text-slate-700" htmlFor="location">
+        <label className="text-sm font-medium text-ink" htmlFor="location">
           Location
         </label>
         <Input
@@ -47,7 +48,7 @@ export function CreateProfileForm({ email }: { email: string }) {
 
       <div className="space-y-2">
         <label
-          className="text-sm font-medium text-slate-700"
+          className="text-sm font-medium text-ink"
           htmlFor="mobile_number"
         >
           Mobile number
@@ -62,17 +63,14 @@ export function CreateProfileForm({ email }: { email: string }) {
       </div>
 
       {state.error ? (
-        <div className="rounded-md border border-red-200 bg-red-50 px-3 py-2 text-sm text-red-700">
+        <div className="rounded-xl border border-danger/20 bg-danger-soft px-3 py-2 text-sm text-danger">
           {state.error}
         </div>
       ) : null}
 
-      <Button
-        type="submit"
-        disabled={pending}
-        className="h-11 w-full bg-[#0eada6] hover:bg-[#0b9690]"
-      >
-        {pending ? "Saving..." : "Continue to BrokerAI"}
+      <Button type="submit" disabled={pending} className="h-11 w-full">
+        {pending ? <Spinner className="h-4 w-4" /> : null}
+        {pending ? "Saving…" : "Continue"}
       </Button>
     </form>
   )

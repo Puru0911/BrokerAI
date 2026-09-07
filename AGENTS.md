@@ -20,12 +20,21 @@ The agent:
 
 ## Current Status
 
-We are starting from a clean slate (MVP phase). We will build this **incrementally, module by module**, one focused task at a time. Never assume features are already built unless I confirm.
+MVP. Build incrementally. Never assume a feature exists unless confirmed.
+
+## Active backend — remember this across sessions
+
+* **Active product backend: `backend-agent/`** (LangChain tool-calling agent). This is what we are working on.
+* **`backend/` is the old LangGraph prototype.** Do not edit it. Do not simulate product flow from it unless the user explicitly asks for the graph prototype.
+* `backend-agent` is **one broker agent** with Python tools. It can call any tool on any turn from conversation alone. There is no intake/matching/mediation graph router.
+* Simulations, prompt work, and backend changes use `backend-agent/app/agents/` and `backend-agent/app/agents/tools/`.
+* Frontend: `frontend/`. Point `NEXT_PUBLIC_BACKEND_URL` at the agent backend.
 
 ## Tech Stack (MVP — Do Not Change Without Approval)
 
-* **Backend**: FastAPI (Python 3.11+) + LangGraph + Pydantic v2 + SQLAlchemy 2.0
-* **LLM Orchestration**: LangChain + LangGraph (stateful multi-agent workflows)
+* **Active backend**: FastAPI (Python 3.11+) + LangChain tool calling + Pydantic v2 + SQLAlchemy 2.0 (`backend-agent/`)
+* **LLM Orchestration**: LangChain `bind_tools` loop (not LangGraph). `backend/` still contains the retired LangGraph graphs.
+* **Prototype backend (do not use)**: `backend/` LangGraph intake / matching / mediation graphs
 * **Vector Database**: ChromaDB (local MVP) — designed for easy migration to Weaviate or Pinecone
 * **Primary Database**: PostgreSQL (via Supabase or Neon)
 * **Frontend**: Next.js 15 (App Router) + TypeScript + Tailwind CSS + shadcn/ui + TanStack Query
@@ -36,9 +45,15 @@ We are starting from a clean slate (MVP phase). We will build this **incremental
 ## Expected Project Structure
 
 BROKERAI/
-├── backend/
+├── backend-agent/               # ACTIVE backend — LangChain tools, one agent
 │   ├── app/
-│   │   ├── agents/              # LangGraph graphs, nodes, state definitions
+│   │   ├── agents/              # prompts, runtime, tools
+│   │   ├── api/
+│   │   ├── rag/
+│   │   └── services/
+├── backend/                     # OLD LangGraph prototype — do not edit
+│   ├── app/
+│   │   ├── agents/              # retired graphs
 │   │   ├── api/                 # FastAPI routers & endpoints
 │   │   ├── core/                # config, security, logging, dependencies
 │   │   ├── db/                  # SQLAlchemy models, migrations, vector store wrappers
@@ -60,7 +75,7 @@ BROKERAI/
 
 ## Coding Standards
 
-* Backend: Clean FastAPI + LangGraph patterns. Use dependency injection. Prefer async where possible.
+* Backend (`backend-agent/`): Clean FastAPI + LangChain tool-calling patterns. Use dependency injection. Prefer async where possible. Do not add LangGraph routers here.
 * Frontend: Server Components by default. Use shadcn/ui components. Mobile-first responsive design.
 * Always include proper error handling, input validation, and logging.
 * Write self-explanatory variable/function names.

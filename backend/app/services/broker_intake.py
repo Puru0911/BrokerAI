@@ -28,12 +28,12 @@ PROMPT_VERSION = "broker-orchestrator-v3-natural-agent-contracts"
 
 class IntakeDecision(BaseModel):
     reply: str = Field(min_length=1, max_length=1200)
-    status: Literal["intake", "ready_for_matching"]
+    status: Literal["intake", "ready_for_matching", "paused", "closed"]
     summary: str = Field(default="", max_length=1000)
     title: str = Field(default="New broker request", max_length=140)
     missing_fields: list[str] = Field(default_factory=list)
     extracted_request: dict[str, Any] = Field(default_factory=dict)
-    next_step: Literal["ask_follow_up", "ready_for_matching"]
+    next_step: Literal["ask_follow_up", "ready_for_matching", "pause_request", "close_request"]
     decision_summary: str = Field(
         default="",
         max_length=500,
@@ -42,8 +42,8 @@ class IntakeDecision(BaseModel):
 
 
 class MasterDecision(BaseModel):
-    route: Literal["clarify", "ready_for_matching"]
-    status: Literal["intake", "ready_for_matching"]
+    route: Literal["clarify", "ready_for_matching", "pause_request", "close_request"]
+    status: Literal["intake", "ready_for_matching", "paused", "closed"]
     title: str = Field(default="New broker request", max_length=140)
     summary: str = Field(default="", max_length=1000)
     extracted_request: dict[str, Any] = Field(default_factory=dict)
@@ -57,7 +57,7 @@ class MasterDecision(BaseModel):
     broker_reply: str = Field(
         default="",
         max_length=1200,
-        description="User-facing reply when the request can move forward without a clarifier.",
+        description="User-facing reply when the request can move forward or lifecycle state changes.",
     )
     decision_summary: str = Field(
         default="",
@@ -294,6 +294,32 @@ async def _finalize_decision_node(state: BrokerGraphState) -> BrokerGraphState:
                 clarifier.decision_summary,
             ),
         )
+    elif master.route == "pause_request":
+        decision = IntakeDecision(
+            reply=master.broker_reply.strip()
+            or "I have paused this broker request. You can resume it when you are ready.",
+            status="paused",
+            summary=master.summary.strip() or state.get("current_summary") or "",
+            title=master.title.strip() or create_title(latest_user_message),
+            missing_fields=[],
+            extracted_request=master.extracted_request,
+            next_step="pause_request",
+            decision_summary=master.decision_summary.strip()
+            or "The master broker node paused the request.",
+        )
+    elif master.route == "close_request":
+        decision = IntakeDecision(
+            reply=master.broker_reply.strip()
+            or "Done. I have closed this broker request.",
+            status="closed",
+            summary=master.summary.strip() or state.get("current_summary") or "",
+            title=master.title.strip() or create_title(latest_user_message),
+            missing_fields=[],
+            extracted_request=master.extracted_request,
+            next_step="close_request",
+            decision_summary=master.decision_summary.strip()
+            or "The master broker node closed the request.",
+        )
     else:
         decision = IntakeDecision(
             reply=(
@@ -340,15 +366,22 @@ def _master_prompt() -> str:
         "when BrokerAI can represent it honestly and begin a credible matching step "
         "from the available context. Use clarify when the remaining ambiguity prevents "
         "that next step or would send matching in a materially wrong direction. "
-        "Clarification should improve progress, not turn intake into a rigid form.\n\n"
+        "Clarification should improve progress, not turn intake into a rigid form. "
+        "Use pause_request or close_request only when the user is clearly changing the "
+        "lifecycle of the current broker request rather than adding normal details.\n\n"
         "Keep this node focused on master-agent work: request state, routing, "
         "readiness, and an audit-safe decision summary. Do not output hidden reasoning. "
         "Do not fabricate user facts, consent, prices, availability, compatibility, or "
         "match quality.\n\n"
+        "Any broker_reply must be natural conversation only: a short acknowledgement, "
+        "one question, or that you will look and update them. Never mention graphs, "
+        "tools, steps, methods, matching internals, or a play-by-play of work.\n\n"
         "Return JSON only. If route is clarify, set status to intake, provide "
         "missing_context and a useful clarification_focus, and leave broker_reply empty. "
         "If route is ready_for_matching, set status to ready_for_matching and provide "
-        "a brief broker_reply that moves the request forward without promising a match."
+        "a brief natural broker_reply that moves the request forward without promising "
+        "a match. If route is pause_request or close_request, set the matching status "
+        "and write a concise confirmation."
     )
 
 
@@ -367,8 +400,10 @@ def _clarifier_prompt() -> str:
         "Respect privacy during intake and avoid asking for secrets, credentials, or "
         "unnecessary contact details.\n\n"
         "Return JSON only. The reply field must contain only the user-facing message "
-        "for this turn. missing_fields should name the unresolved context this turn "
-        "targets. decision_summary is a brief audit note, not hidden reasoning."
+        "for this turn — natural conversation, usually one question. Never mention "
+        "steps, methods, tools, graphs, or how matching works. missing_fields should "
+        "name the unresolved context this turn targets. decision_summary is a brief "
+        "audit note, not hidden reasoning."
     )
 
 

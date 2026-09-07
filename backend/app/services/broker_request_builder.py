@@ -29,24 +29,28 @@ async def upsert_request_from_decision(
         broker_request = BrokerRequest(
             session_id=broker_session.id,
             user_id=broker_session.user_id,
-            status="ready_for_embedding",
+            status="ready_for_matching",
             request_type=request_type,
             category=category,
             title=decision.title or broker_session.title,
             summary=decision.summary or broker_session.summary or "",
             structured_data=structured_data,
             embedding_status="pending",
+            active_graph=None,
+            active_match_id=None,
         )
         db.add(broker_request)
         return broker_request
 
-    broker_request.status = "ready_for_embedding"
+    broker_request.status = "ready_for_matching"
     broker_request.request_type = request_type
     broker_request.category = category
     broker_request.title = decision.title or broker_session.title
     broker_request.summary = decision.summary or broker_session.summary or ""
     broker_request.structured_data = structured_data
     broker_request.embedding_status = "pending"
+    broker_request.active_graph = None
+    broker_request.active_match_id = None
     return broker_request
 
 

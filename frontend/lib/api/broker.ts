@@ -7,12 +7,39 @@ export type BrokerSession = {
   updated_at: string
 }
 
+export type BrokerAttachment = {
+  id: string
+  session_id: string
+  kind: "file" | "url"
+  share_class: "pending" | "public" | "personal"
+  label: string | null
+  purpose: string | null
+  original_filename: string | null
+  content_type: string | null
+  size_bytes: number | null
+  url: string | null
+  content_url: string | null
+  description: string | null
+  status: string
+  created_at: string
+}
+
+export type BrokerUploadRequest = {
+  id: string
+  purpose: string
+  suggested_share_class: string
+  hint: string
+  status: string
+  created_at: string
+}
+
 export type BrokerMessage = {
   id: string
   session_id: string
   role: "assistant" | "user"
   content: string
   created_at: string
+  attachments?: BrokerAttachment[]
 }
 
 export type BrokerPartyConnection = {
@@ -28,6 +55,8 @@ export type BrokerPartyConnection = {
 export type BrokerSessionDetail = {
   session: BrokerSession
   messages: BrokerMessage[]
+  attachments?: BrokerAttachment[]
+  pending_upload_requests?: BrokerUploadRequest[]
 }
 
 function getBackendUrl() {
@@ -61,6 +90,10 @@ async function brokerFetch<T>(
     throw new Error(detail)
   }
 
+  if (response.status === 204) {
+    return undefined as T
+  }
+
   return (await response.json()) as T
 }
 
@@ -85,17 +118,95 @@ export function getBrokerSession(accessToken: string, sessionId: string) {
   )
 }
 
+export function deleteBrokerSession(accessToken: string, sessionId: string) {
+  return brokerFetch<void>(accessToken, `/broker/sessions/${sessionId}`, {
+    method: "DELETE"
+  })
+}
+
 export function sendBrokerMessage(
   accessToken: string,
   sessionId: string,
-  content: string
+  content: string,
+  attachmentIds: string[] = []
 ) {
   return brokerFetch<BrokerMessage[]>(
     accessToken,
     `/broker/sessions/${sessionId}/messages`,
     {
       method: "POST",
-      body: JSON.stringify({ content })
+      body: JSON.stringify({
+        content,
+        attachment_ids: attachmentIds
+      })
+    }
+  )
+}
+
+export async function uploadBrokerAttachment(
+  accessToken: string,
+  sessionId: string,
+  file: File,
+  options?: { caption?: string; requestId?: string }
+) {
+  const body = new FormData()
+  body.append("file", file)
+  if (options?.caption) body.append("caption", options.caption)
+  if (options?.requestId) body.append("request_id", options.requestId)
+
+  const response = await fetch(
+    `${getBackendUrl()}/broker/sessions/${sessionId}/attachments`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      },
+      body
+    }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const detail =
+      typeof payload?.detail === "string"
+        ? payload.detail
+        : `Upload failed with status ${response.status}`
+    throw new Error(detail)
+  }
+  return (await response.json()) as BrokerAttachment
+}
+
+export function addBrokerLink(
+  accessToken: string,
+  sessionId: string,
+  url: string,
+  options?: { caption?: string; requestId?: string }
+) {
+  return brokerFetch<BrokerAttachment>(
+    accessToken,
+    `/broker/sessions/${sessionId}/links`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        url,
+        caption: options?.caption || null,
+        request_id: options?.requestId || null
+      })
+    }
+  )
+}
+
+export function grantBrokerAttachment(
+  accessToken: string,
+  attachmentId: string,
+  matchId: string,
+  granted: boolean
+) {
+  return brokerFetch<BrokerAttachment>(
+    accessToken,
+    `/broker/attachments/${attachmentId}/grants`,
+    {
+      method: "POST",
+      body: JSON.stringify({ match_id: matchId, granted })
     }
   )
 }

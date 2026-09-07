@@ -284,7 +284,7 @@ async def connect_parties(
 ) -> BrokerPartyConnection:
     profile = await _require_profile(db, current_user)
     broker_match = await _get_owned_match(match_id, db, profile)
-    if broker_match.status != "accepted":
+    if broker_match.status not in {"accepted", "connected"}:
         raise HTTPException(
             status_code=status.HTTP_409_CONFLICT,
             detail="Both parties must accept before a direct connection can be created.",

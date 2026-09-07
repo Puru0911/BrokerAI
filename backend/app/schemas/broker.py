@@ -45,6 +45,8 @@ class BrokerRequestRead(BaseModel):
     summary: str
     structured_data: dict
     embedding_status: str
+    active_graph: str | None
+    active_match_id: str | None
     created_at: datetime
     updated_at: datetime
 

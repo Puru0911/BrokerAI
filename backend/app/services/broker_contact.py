@@ -14,6 +14,7 @@ from app.db.models import (
     BrokerRequest,
     UserProfile,
 )
+from app.services.broker_workflow import clear_match_workflows
 
 CONTACT_CARD_KIND = "broker_contact_card"
 CONTACT_CARD_VERSION = 1
@@ -95,6 +96,8 @@ async def create_party_connection(
     )
     existing_connection = result.scalar_one_or_none()
     if existing_connection is not None:
+        broker_match.status = "connected"
+        await clear_match_workflows(db, broker_match)
         return existing_connection
 
     connection = BrokerPartyConnection(
@@ -105,6 +108,8 @@ async def create_party_connection(
     )
     db.add(connection)
     await db.flush()
+    broker_match.status = "connected"
+    await clear_match_workflows(db, broker_match)
     db.add(
         BrokerMediationEvent(
             match_id=broker_match.id,

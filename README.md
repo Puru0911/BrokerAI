@@ -1,6 +1,6 @@
 # BrokerAI
 
-BrokerAI is an intelligent conversational broker that connects people with compatible needs and offers. It uses a FastAPI backend, LangGraph-based orchestration, semantic retrieval with ChromaDB, and a Next.js frontend for chat-driven intake and mediation.
+BrokerAI is an intelligent conversational broker that connects people with compatible needs and offers. The active backend is a FastAPI + LangChain tool-calling agent with Chroma RAG. A Next.js chat client collects requests and shows mediated contact cards.
 
 ## What It Does
 
@@ -13,7 +13,7 @@ BrokerAI is an intelligent conversational broker that connects people with compa
 
 ## Tech Stack
 
-- Backend: FastAPI, Python 3.11+, Pydantic v2, SQLAlchemy 2.0, LangChain, LangGraph
+- Backend: FastAPI, Python 3.11+, Pydantic v2, SQLAlchemy 2.0, LangChain tools + RAG
 - Vector store: ChromaDB local persistence for MVP
 - Database: PostgreSQL, suitable for Supabase or Neon
 - Frontend: Next.js 15 App Router, TypeScript, Tailwind CSS
@@ -23,15 +23,18 @@ BrokerAI is an intelligent conversational broker that connects people with compa
 ## Repository Layout
 
 ```text
-backend/
+backend-agent/          # active agentic backend
   app/
     agents/
     api/
     core/
     db/
+    llm/
+    rag/
     schemas/
     services/
   tests/
+backend/                 # earlier graph prototype, not the active architecture
 frontend/
   app/
   components/
@@ -52,8 +55,10 @@ docs/
 
 ## Backend Setup
 
+The active service is `backend-agent/`:
+
 ```bash
-cd backend
+cd backend-agent
 cp .env.example .env
 uv sync
 uv run uvicorn app.main:app --reload
@@ -71,8 +76,11 @@ Important backend environment variables:
 - `GROQ_API_KEY`
 - `GEMINI_API_KEY`
 - `CHROMA_PERSIST_DIR`
-- `MATCH_EXPORT_DIR`
+- `CHROMA_REQUEST_COLLECTION`
+- `AGENT_MAX_TOOL_STEPS`
 - `SUPABASE_URL`
+- `SUPABASE_SERVICE_ROLE_KEY` (private Storage bucket for session files)
+- `SUPABASE_STORAGE_BUCKET` (default `broker-attachments`)
 
 ## Frontend Setup
 
@@ -96,7 +104,7 @@ Important frontend environment variables:
 Start the backend first, then the frontend:
 
 ```bash
-cd backend
+cd backend-agent
 uv run uvicorn app.main:app --reload
 ```
 
@@ -112,7 +120,7 @@ For local auth testing, the frontend includes a temporary sign-in flow and the b
 Backend:
 
 ```bash
-cd backend
+cd backend-agent
 uv run pytest
 uv run ruff check .
 ```

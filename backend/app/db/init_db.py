@@ -16,3 +16,21 @@ async def init_db() -> None:
         await connection.execute(
             text("ALTER TABLE broker_requests DROP COLUMN IF EXISTS search_text")
         )
+        await connection.execute(
+            text("ALTER TABLE broker_requests ADD COLUMN IF NOT EXISTS active_graph VARCHAR(32)")
+        )
+        await connection.execute(
+            text("ALTER TABLE broker_requests ADD COLUMN IF NOT EXISTS active_match_id VARCHAR(36)")
+        )
+        await connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_broker_requests_active_graph "
+                "ON broker_requests (active_graph)"
+            )
+        )
+        await connection.execute(
+            text(
+                "CREATE INDEX IF NOT EXISTS ix_broker_requests_active_match_id "
+                "ON broker_requests (active_match_id)"
+            )
+        )

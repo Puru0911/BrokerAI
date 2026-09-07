@@ -1,15 +1,25 @@
 import "./globals.css"
+
+import { Plus_Jakarta_Sans } from "next/font/google"
 import type { ReactNode } from "react"
+
+const sans = Plus_Jakarta_Sans({
+  subsets: ["latin"],
+  display: "swap",
+  variable: "--font-sans"
+})
 
 export const metadata = {
   title: "BrokerAI",
-  description: "An AI broker that matches people and needs"
+  description: "A private AI broker for requests, offers, matches, and deal-making."
 }
 
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
-    <html lang="en">
-      <body className="min-h-screen bg-white text-zinc-900">{children}</body>
+    <html lang="en" className={sans.variable}>
+      <body className="min-h-screen bg-canvas font-sans text-ink antialiased">
+        {children}
+      </body>
     </html>
   )
 }

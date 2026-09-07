@@ -120,6 +120,8 @@ class BrokerRequest(Base):
     summary: Mapped[str] = mapped_column(Text)
     structured_data: Mapped[dict] = mapped_column(JSONB)
     embedding_status: Mapped[str] = mapped_column(String(32), default="pending")
+    active_graph: Mapped[str | None] = mapped_column(String(32), index=True)
+    active_match_id: Mapped[str | None] = mapped_column(String(36), index=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
         server_default=func.now(),
@@ -154,7 +156,7 @@ class BrokerMatch(Base):
         ForeignKey("broker_requests.id", ondelete="CASCADE"),
         index=True,
     )
-    status: Mapped[str] = mapped_column(String(32), default="candidate_found", index=True)
+    status: Mapped[str] = mapped_column(String(32), default="discovered", index=True)
     score: Mapped[float | None] = mapped_column(Float)
     rank: Mapped[int | None] = mapped_column(Integer)
     match_reason: Mapped[str | None] = mapped_column(Text)
