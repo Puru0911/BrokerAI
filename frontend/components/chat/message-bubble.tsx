@@ -17,6 +17,7 @@ export type MessageActions = {
   connectingMatchId: string | null
   connectedMatchIds: Set<string>
   onConnect: (matchId: string) => void
+  onOpenChat?: (matchId: string) => void
   uploadingRequestId: string | null
   onRequestUpload: (requestId: string, file: File) => void
   grantingAttachmentId: string | null
@@ -60,6 +61,7 @@ export function MessageBubble({
             connecting={actions.connectingMatchId === contactCard.match_id}
             connected={actions.connectedMatchIds.has(contactCard.match_id)}
             onConnect={() => actions.onConnect(contactCard.match_id)}
+            onOpenChat={() => actions.onOpenChat?.(contactCard.match_id)}
           />
         ) : null}
         {requestCard && !isUser ? (

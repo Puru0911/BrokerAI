@@ -32,17 +32,16 @@ def _decode_jwt_payload(token: str) -> dict[str, Any]:
     return parsed_payload
 
 
-async def get_current_user(authorization: str | None = Header(default=None)) -> CurrentUser:
-    if not authorization or not authorization.startswith("Bearer "):
+def user_from_access_token(token: str) -> CurrentUser:
+    cleaned = token.strip()
+    if not cleaned:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing bearer token",
         )
 
-    token = authorization.removeprefix("Bearer ").strip()
-
-    if settings.ENV == "local" and token.startswith("dev:"):
-        email = token.removeprefix("dev:").strip().lower()
+    if settings.ENV == "local" and cleaned.startswith("dev:"):
+        email = cleaned.removeprefix("dev:").strip().lower()
         if not email or "@" not in email:
             raise HTTPException(
                 status_code=status.HTTP_401_UNAUTHORIZED,
@@ -51,7 +50,7 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
         return CurrentUser(id=f"dev:{email}", email=email)
 
     try:
-        payload = _decode_jwt_payload(token)
+        payload = _decode_jwt_payload(cleaned)
     except Exception as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
@@ -67,3 +66,12 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
 
     email = payload.get("email")
     return CurrentUser(id=user_id, email=email if isinstance(email, str) else None)
+
+
+async def get_current_user(authorization: str | None = Header(default=None)) -> CurrentUser:
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing bearer token",
+        )
+    return user_from_access_token(authorization.removeprefix("Bearer ").strip())

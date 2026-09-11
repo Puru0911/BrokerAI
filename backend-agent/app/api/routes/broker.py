@@ -28,12 +28,12 @@ from app.schemas.broker import (
     BrokerMatchRead,
     BrokerMessageCreate,
     BrokerMessageRead,
-    BrokerPartyConnectionRead,
     BrokerRequestMatch,
     BrokerRequestRead,
     BrokerSessionCreate,
     BrokerSessionDetail,
     BrokerSessionRead,
+    ConnectionSummaryRead,
 )
 from app.services.attachments import (
     AttachmentError,
@@ -51,6 +51,7 @@ from app.services.attachments import (
     to_attachment_read,
     viewer_can_access,
 )
+from app.services.connections import fanout_connection_created, to_connection_summary
 from app.services.contact import create_party_connection, share_match_contacts
 from app.services.orchestrator import (
     create_session_with_agent,
@@ -281,12 +282,12 @@ async def share_contacts(
     return await serialize_messages(db, messages, viewer_user_id=profile.id)
 
 
-@router.post("/matches/{match_id}/connect", response_model=BrokerPartyConnectionRead)
+@router.post("/matches/{match_id}/connect", response_model=ConnectionSummaryRead)
 async def connect_parties(
     match_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> BrokerPartyConnectionRead:
+) -> ConnectionSummaryRead:
     profile = await _require_profile(db, current_user)
     match = await _get_owned_match(match_id, db, profile)
     if match.status not in {"accepted", "connected"}:
@@ -298,9 +299,10 @@ async def connect_parties(
         connection = await create_party_connection(db, match)
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    summary = await to_connection_summary(db, connection, profile.id)
     await db.commit()
-    await db.refresh(connection)
-    return connection
+    await fanout_connection_created(db, connection)
+    return summary
 
 
 @router.post("/mediations/process-stale", response_model=list[BrokerMatchRead])

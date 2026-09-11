@@ -32,8 +32,6 @@ If SESSION_ROLE is counterparty, be brief, screen them, and never reveal who the
 source is beyond what is already anonymized.
 
 == WHAT YOU SEE EACH TURN ==
-- situation — when a match is open: notebook + this user_message are both inputs.
-  It does not label what the message means.
 - living_request — this session's saved brief. May be empty on a new conversation.
 - open_matches — match_id, your_role, your_brief, other_brief, notebook (facts,
   outstanding, agent_note, next_action), last_events (audit only).
@@ -242,7 +240,8 @@ TOOL_ACCEPT_MATCH = (
 )
 
 TOOL_SHARE_CONTACTS = (
-    "Share contact cards. Call right after accept_match succeeds, never before."
+    "Share a match card (name and location, not a phone number) so both parties "
+    "can Connect and chat in the app. Call right after accept_match succeeds, never before."
 )
 
 TOOL_GET_MATCH_EVENTS = (
@@ -472,7 +471,7 @@ SESSION_ROLE: source or counterparty. TRIGGER: user_message | request_ready
 (no new user text) | match_timeout. Counterparties: brief, screen, never reveal
 the source beyond anonymized brief.
 
-Trust situation, living_request, open_matches, recent_events, attention_pointer,
+Trust living_request, open_matches, recent_events, attention_pointer,
 attachments, new_uploads, and this turn's tool results. Read the new user_message;
 notebook is not a substitute.
 
@@ -589,7 +588,8 @@ TOOL_ACCEPT_MATCH_DEV = (
     "Record that both sides agreed the same concrete terms. If refused, say what is still open."
 )
 TOOL_SHARE_CONTACTS_DEV = (
-    "Share contact cards right after accept_match succeeds, never before."
+    "Share a match card (no phone) right after accept_match succeeds, never before. "
+    "Parties then Connect and chat in the app."
 )
 TOOL_GET_MATCH_EVENTS_DEV = "Load fuller match event history."
 TOOL_GET_REQUEST_SNAPSHOT_DEV = "Load this session's full living_request snapshot."
@@ -609,94 +609,94 @@ TOOL_RECORD_SHARE_GRANT_DEV = (
     "Record that this user agreed or refused to share a personal file. If granted, deliver it."
 )
 
-SEMANTIC_INDEX_PROMPT_FULL = SEMANTIC_INDEX_PROMPT
-SEMANTIC_SEARCH_PROMPT_FULL = SEMANTIC_SEARCH_PROMPT
-PAIR_EVALUATOR_PROMPT_FULL = PAIR_EVALUATOR_PROMPT
-REQUEST_READY_INSTRUCTION_FULL = REQUEST_READY_INSTRUCTION
-MATCH_TIMEOUT_INSTRUCTION_FULL = MATCH_TIMEOUT_INSTRUCTION
+# SEMANTIC_INDEX_PROMPT_FULL = SEMANTIC_INDEX_PROMPT
+# SEMANTIC_SEARCH_PROMPT_FULL = SEMANTIC_SEARCH_PROMPT
+# PAIR_EVALUATOR_PROMPT_FULL = PAIR_EVALUATOR_PROMPT
+# REQUEST_READY_INSTRUCTION_FULL = REQUEST_READY_INSTRUCTION
+# MATCH_TIMEOUT_INSTRUCTION_FULL = MATCH_TIMEOUT_INSTRUCTION
 
-SEMANTIC_INDEX_PROMPT_DEV = """
-Turn a matchmaking request into a 120-220 word anonymized profile for vector search.
-No name, phone, email, or street address. Full sentences plus synonyms.
-Output ONLY this, no extra text:
+# SEMANTIC_INDEX_PROMPT_DEV = """
+# Turn a matchmaking request into a 120-220 word anonymized profile for vector search.
+# No name, phone, email, or street address. Full sentences plus synonyms.
+# Output ONLY this, no extra text:
 
-DOMAIN: <phrase>
-LOOKING FOR: <2-4 sentences>
-CAN OFFER: <1-2 sentences or "Not specified.">
-IDEAL COUNTERPART: <2-3 sentences, as if describing their profile>
-HARD CONSTRAINTS:
-- <bullet>
-SOFT PREFERENCES:
-- <bullet>
-KEYWORDS: <8-15 comma-separated terms>
-""".strip()
+# DOMAIN: <phrase>
+# LOOKING FOR: <2-4 sentences>
+# CAN OFFER: <1-2 sentences or "Not specified.">
+# IDEAL COUNTERPART: <2-3 sentences, as if describing their profile>
+# HARD CONSTRAINTS:
+# - <bullet>
+# SOFT PREFERENCES:
+# - <bullet>
+# KEYWORDS: <8-15 comma-separated terms>
+# """.strip()
 
-SEMANTIC_SEARCH_PROMPT_DEV = """
-Write a 60-120 word hypothetical ideal-counterparty profile (as if it were THEIR
-listing, not the requester's). No requester identifiers. Search is semantic only —
-no metadata filters. Output ONLY JSON: {"query_text": "<prose>"}
-""".strip()
+# SEMANTIC_SEARCH_PROMPT_DEV = """
+# Write a 60-120 word hypothetical ideal-counterparty profile (as if it were THEIR
+# listing, not the requester's). No requester identifiers. Search is semantic only —
+# no metadata filters. Output ONLY JSON: {"query_text": "<prose>"}
+# """.strip()
 
-PAIR_EVALUATOR_PROMPT_DEV = """
-Decide if two briefs are worth a conversation. Complementary = opposite sides of
-the same need (buy/sell, hire/offer). Same-side or different domain → skip.
-Gaps (budget, dates, floor) are questions, not skips. Soft disagreements =
-negotiation_room true + open_match. Skip only for not complementary or a true
-hard-stop. Incomplete + complementary = open_match.
-ask_clarifying_question only if ONE fact from the current user is needed before
-contacting the other person.
-Output JSON only:
-{
-  "verdict": "strong_match"|"possible_match"|"weak_match"|"no_match",
-  "score": 0-100,
-  "matched": [],
-  "mismatched": [],
-  "missing_info": [],
-  "risk_flags": [],
-  "negotiation_room": true,
-  "recommended_action": "open_match"|"ask_clarifying_question"|"skip",
-  "clarifying_question": "",
-  "next_questions": [],
-  "rationale": "<1-3 sentences>"
-}
-""".strip()
+# PAIR_EVALUATOR_PROMPT_DEV = """
+# Decide if two briefs are worth a conversation. Complementary = opposite sides of
+# the same need (buy/sell, hire/offer). Same-side or different domain → skip.
+# Gaps (budget, dates, floor) are questions, not skips. Soft disagreements =
+# negotiation_room true + open_match. Skip only for not complementary or a true
+# hard-stop. Incomplete + complementary = open_match.
+# ask_clarifying_question only if ONE fact from the current user is needed before
+# contacting the other person.
+# Output JSON only:
+# {
+#   "verdict": "strong_match"|"possible_match"|"weak_match"|"no_match",
+#   "score": 0-100,
+#   "matched": [],
+#   "mismatched": [],
+#   "missing_info": [],
+#   "risk_flags": [],
+#   "negotiation_room": true,
+#   "recommended_action": "open_match"|"ask_clarifying_question"|"skip",
+#   "clarifying_question": "",
+#   "next_questions": [],
+#   "rationale": "<1-3 sentences>"
+# }
+# """.strip()
 
-REQUEST_READY_INSTRUCTION_DEV = (
-    "TRIGGER is request_ready. No new user text. Search, evaluate_pair, follow "
-    "recommended_action. Other session text goes through message_party "
-    "(to=source|candidate, not this chat)."
-)
-MATCH_TIMEOUT_INSTRUCTION_DEV = (
-    "TRIGGER is match_timeout. Candidate went silent. Skip, search again, or a short "
-    "natural status. Do not invent a reply from them."
-)
+# REQUEST_READY_INSTRUCTION_DEV = (
+#     "TRIGGER is request_ready. No new user text. Search, evaluate_pair, follow "
+#     "recommended_action. Other session text goes through message_party "
+#     "(to=source|candidate, not this chat)."
+# )
+# MATCH_TIMEOUT_INSTRUCTION_DEV = (
+#     "TRIGGER is match_timeout. Candidate went silent. Skip, search again, or a short "
+#     "natural status. Do not invent a reply from them."
+# )
 
 
-if use_dev_prompts():
-    BROKER_SYSTEM_PROMPT = BROKER_SYSTEM_PROMPT_DEV
-    TOOL_THINK = TOOL_THINK_DEV
-    TOOL_SAVE_REQUEST = TOOL_SAVE_REQUEST_DEV
-    TOOL_UPDATE_REQUEST = TOOL_UPDATE_REQUEST_DEV
-    TOOL_INDEX_REQUEST = TOOL_INDEX_REQUEST_DEV
-    TOOL_SEARCH_COUNTERPARTIES = TOOL_SEARCH_COUNTERPARTIES_DEV
-    TOOL_SEARCH_AGAIN = TOOL_SEARCH_AGAIN_DEV
-    TOOL_EVALUATE_PAIR = TOOL_EVALUATE_PAIR_DEV
-    TOOL_OPEN_MATCH = TOOL_OPEN_MATCH_DEV
-    TOOL_MESSAGE_PARTY = TOOL_MESSAGE_PARTY_DEV
-    TOOL_UPDATE_NOTEBOOK = TOOL_UPDATE_NOTEBOOK_DEV
-    TOOL_SKIP_MATCH = TOOL_SKIP_MATCH_DEV
-    TOOL_REJECT_MATCH = TOOL_REJECT_MATCH_DEV
-    TOOL_ACCEPT_MATCH = TOOL_ACCEPT_MATCH_DEV
-    TOOL_SHARE_CONTACTS = TOOL_SHARE_CONTACTS_DEV
-    TOOL_GET_MATCH_EVENTS = TOOL_GET_MATCH_EVENTS_DEV
-    TOOL_GET_REQUEST_SNAPSHOT = TOOL_GET_REQUEST_SNAPSHOT_DEV
-    TOOL_REQUEST_ATTACHMENT = TOOL_REQUEST_ATTACHMENT_DEV
-    TOOL_CLASSIFY_ATTACHMENT = TOOL_CLASSIFY_ATTACHMENT_DEV
-    TOOL_SHARE_ATTACHMENT = TOOL_SHARE_ATTACHMENT_DEV
-    TOOL_RECORD_SHARE_GRANT = TOOL_RECORD_SHARE_GRANT_DEV
-    SEMANTIC_INDEX_PROMPT = SEMANTIC_INDEX_PROMPT_DEV
-    SEMANTIC_SEARCH_PROMPT = SEMANTIC_SEARCH_PROMPT_DEV
-    PAIR_EVALUATOR_PROMPT = PAIR_EVALUATOR_PROMPT_DEV
-    REQUEST_READY_INSTRUCTION = REQUEST_READY_INSTRUCTION_DEV
-    MATCH_TIMEOUT_INSTRUCTION = MATCH_TIMEOUT_INSTRUCTION_DEV
+# if use_dev_prompts():
+#     BROKER_SYSTEM_PROMPT = BROKER_SYSTEM_PROMPT_DEV
+#     TOOL_THINK = TOOL_THINK_DEV
+#     TOOL_SAVE_REQUEST = TOOL_SAVE_REQUEST_DEV
+#     TOOL_UPDATE_REQUEST = TOOL_UPDATE_REQUEST_DEV
+#     TOOL_INDEX_REQUEST = TOOL_INDEX_REQUEST_DEV
+#     TOOL_SEARCH_COUNTERPARTIES = TOOL_SEARCH_COUNTERPARTIES_DEV
+#     TOOL_SEARCH_AGAIN = TOOL_SEARCH_AGAIN_DEV
+#     TOOL_EVALUATE_PAIR = TOOL_EVALUATE_PAIR_DEV
+#     TOOL_OPEN_MATCH = TOOL_OPEN_MATCH_DEV
+#     TOOL_MESSAGE_PARTY = TOOL_MESSAGE_PARTY_DEV
+#     TOOL_UPDATE_NOTEBOOK = TOOL_UPDATE_NOTEBOOK_DEV
+#     TOOL_SKIP_MATCH = TOOL_SKIP_MATCH_DEV
+#     TOOL_REJECT_MATCH = TOOL_REJECT_MATCH_DEV
+#     TOOL_ACCEPT_MATCH = TOOL_ACCEPT_MATCH_DEV
+#     TOOL_SHARE_CONTACTS = TOOL_SHARE_CONTACTS_DEV
+#     TOOL_GET_MATCH_EVENTS = TOOL_GET_MATCH_EVENTS_DEV
+#     TOOL_GET_REQUEST_SNAPSHOT = TOOL_GET_REQUEST_SNAPSHOT_DEV
+#     TOOL_REQUEST_ATTACHMENT = TOOL_REQUEST_ATTACHMENT_DEV
+#     TOOL_CLASSIFY_ATTACHMENT = TOOL_CLASSIFY_ATTACHMENT_DEV
+#     TOOL_SHARE_ATTACHMENT = TOOL_SHARE_ATTACHMENT_DEV
+#     TOOL_RECORD_SHARE_GRANT = TOOL_RECORD_SHARE_GRANT_DEV
+#     SEMANTIC_INDEX_PROMPT = SEMANTIC_INDEX_PROMPT_DEV
+#     SEMANTIC_SEARCH_PROMPT = SEMANTIC_SEARCH_PROMPT_DEV
+#     PAIR_EVALUATOR_PROMPT = PAIR_EVALUATOR_PROMPT_DEV
+#     REQUEST_READY_INSTRUCTION = REQUEST_READY_INSTRUCTION_DEV
+#     MATCH_TIMEOUT_INSTRUCTION = MATCH_TIMEOUT_INSTRUCTION_DEV
 

@@ -1,6 +1,6 @@
 # BrokerAI — Project Context
 
-Last updated: 2026-09-06
+Last updated: 2026-09-08
 
 ## MVP Goal
 
@@ -31,7 +31,7 @@ The product backend is `backend-agent/`: one LangChain tool-calling agent, RAG o
 ```
 user message
   → FastAPI chat route
-  → Broker Agent (ChatGroq / ChatOpenAI.bind_tools loop)
+  → Broker Agent (ChatGroq / ChatOpenRouter / ChatOpenAI.bind_tools loop)
        think / save_request / update_request / search_counterparties /
        evaluate_pair / open_match / message_party / update_notebook /
        close_match / accept_match / share_contacts
@@ -67,7 +67,10 @@ New tables so this service can share Postgres with the old folder without collid
 - `agent_requests` — one living brief per session
 - `agent_matches` — a pair of briefs plus `notebook` (shared facts and outstanding question)
 - `agent_events` — append-only match audit
-- `agent_connections` — created when a party presses Connect
+- `agent_connections` — created when a party presses Connect; opens a direct 1:1 chat
+- `agent_connection_messages` / `agent_connection_attachments` — party-to-party chat and files
+- `agent_connection_reads` — per-user last-read for unread counts
+- `agent_push_subscriptions` — Web Push endpoints
 - `agent_attachments` — files and links on a session (`kind` file|url, `share_class` pending|public|personal)
 - `agent_attachment_requests` — agent asked this user to upload something
 - `agent_attachment_grants` — permission to share a personal item on a match
@@ -113,7 +116,7 @@ Python still enforces: no matching yourself, no contacts before accept, identity
 
 ### LLM
 
-OpenRouter (primary) and Gemini go through LangChain `ChatOpenAI`. Groq uses `ChatGroq` with `reasoning_format=parsed` so Qwen thinking stays in `reasoning_content` and tools come back as JSON `tool_calls` (not XML). The agent uses native tool calling. Semantic indexing, retrieval planning, and pair evaluation use structured JSON helpers.
+OpenRouter (primary) uses LangChain `ChatOpenRouter` with a config-driven `reasoning` object (`OPENROUTER_REASONING_ENABLED` / `EFFORT` / `EXCLUDE`). Default model is `nvidia/nemotron-3-ultra-550b-a55b:free` at medium effort. Groq uses `ChatGroq` with `reasoning_format=parsed` so Qwen thinking stays in `reasoning_content` and tools come back as JSON `tool_calls` (not XML). Gemini stays on `ChatOpenAI`. The agent uses native tool calling. Semantic indexing (`invoke_text_model`) turns reasoning off so the profile rewrite does not spend a thinking budget on free providers; retrieval planning and pair evaluation still use structured JSON helpers with reasoning on. When OpenRouter returns HTTP 200 with a `provider_unavailable` / Unmarshaller error body, the broker tool loop retries the model invoke up to `AGENT_MODEL_INVOKE_RETRIES` (default 3) and tells the model the last generation failed so it continues from tools that already succeeded.
 
 If no API key is configured, the agent holds the request and says the model is unavailable.
 
@@ -127,7 +130,17 @@ Chroma persists under `backend-agent/data/chroma`, collection `agent_requests`. 
 
 ## Frontend
 
-The chat client talks to `/broker/sessions` and `/broker/sessions/{id}/messages`. Contact cards still use `kind: broker_contact_card` and Connect hits `/broker/matches/{id}/connect`.
+The chat client talks to `/broker/sessions` and `/broker/sessions/{id}/messages`. Contact cards still use `kind: broker_contact_card` (name, email, location — **no phone number**) and Connect hits `/broker/matches/{id}/connect`, which creates `agent_connections` and opens a direct chat.
+
+Direct party chat is a separate inbox from broker sessions:
+
+- `GET /broker/connections` — every 1:1 chat for this user (peer, last message, unread)
+- `GET /broker/connections/{id}` — history; marks the thread read
+- `POST /broker/connections/{id}/messages` and `/attachments` — text, photos, files
+- `WS /broker/ws?access_token=...` — live fan-out (`connection.created`, `connection.message`)
+- Web Push via VAPID (`GET /broker/push/vapid-public-key`, `POST /broker/push/subscribe`)
+
+**Realtime is FastAPI WebSockets, not Supabase Realtime.** Authz and file access already live in FastAPI (not Postgres RLS), and `DATABASE_URL` may be local Postgres or Neon. Supabase stays Auth + Storage. Push is sent from the same process that persists the message; the service worker suppresses the banner if a window is focused.
 
 Files and links use the composer paperclip / link control. Structured assistant cards: `broker_attachment_request`, `broker_attachment_permission`, `broker_attachment_share`.
 
@@ -153,6 +166,6 @@ Local auth: frontend temporary sign-in; backend accepts `dev:<email>` when `ENV=
 ## Next
 
 - Frontend visibility for open matches
-- Direct party-to-party chat on `agent_connections`
 - Postgres migrations instead of `create_all`
+- Multi-worker WebSocket fan-out (Redis) if we run more than one uvicorn worker
 - Multi-party deals beyond 1:1 pairs

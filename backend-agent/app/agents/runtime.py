@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -110,6 +111,43 @@ def _trigger_instruction(ctx: ToolContext) -> str:
     )
 
 
+_RETRYABLE_PROVIDER_ERROR_NAMES = frozenset(
+    {
+        "ResponseValidationError",
+        "BadGatewayResponseError",
+        "ProviderOverloadedResponseError",
+        "ServiceUnavailableResponseError",
+    }
+)
+_RETRYABLE_PROVIDER_MARKERS = (
+    "provider_unavailable",
+    "provider overloaded",
+    "validation errors for unmarshaller",
+    "body.choices",
+)
+_PROVIDER_RETRY_NOTICE = (
+    "The previous generation attempt failed because the model provider was "
+    "temporarily unavailable. Continue from the current conversation and any "
+    "tool results already in this turn. Do not repeat a tool that already "
+    "succeeded. Take the next action now, or reply to the user if you are done."
+)
+
+
+def is_retryable_provider_error(exc: BaseException) -> bool:
+    """True for OpenRouter 200+error bodies and upstream unavailability."""
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        if type(current).__name__ in _RETRYABLE_PROVIDER_ERROR_NAMES:
+            return True
+        text = str(current).lower()
+        if any(marker in text for marker in _RETRYABLE_PROVIDER_MARKERS):
+            return True
+        current = current.__cause__ or current.__context__
+    return False
+
+
 def _tool_names(tool_calls: list[Any]) -> list[str]:
     names: list[str] = []
     for call in tool_calls:
@@ -139,22 +177,49 @@ async def run_tool_loop(
     seen_calls: set[str] = set()
     sid = session_id or "-"
 
+    max_retries = max(0, int(settings.AGENT_MODEL_INVOKE_RETRIES))
     for step in range(max_steps):
         logger.debug("tool loop step %s/%s session=%s", step + 1, max_steps, sid)
-        try:
-            response = await bound.ainvoke(messages)
-        except Exception as exc:
-            repaired = repair_tool_message(exc)
-            if repaired is None:
-                logger.warning("model invoke failed session=%s step=%s error=%s", sid, step + 1, exc)
+        response = None
+        provider_failures = 0
+        while True:
+            try:
+                response = await bound.ainvoke(messages)
+                break
+            except Exception as exc:
+                repaired = repair_tool_message(exc)
+                if repaired is not None:
+                    logger.warning(
+                        "provider rejected tool JSON; repaired XML session=%s step=%s tools=%s",
+                        sid,
+                        step + 1,
+                        _tool_names(getattr(repaired, "tool_calls", None) or []),
+                    )
+                    response = repaired
+                    break
+                if is_retryable_provider_error(exc) and provider_failures < max_retries:
+                    provider_failures += 1
+                    logger.warning(
+                        "model invoke retry session=%s step=%s attempt=%s/%s error=%s",
+                        sid,
+                        step + 1,
+                        provider_failures,
+                        max_retries,
+                        clip(str(exc), 240),
+                    )
+                    if provider_failures == 1:
+                        messages.append(HumanMessage(content=_PROVIDER_RETRY_NOTICE))
+                    await asyncio.sleep(min(2 * provider_failures, 6))
+                    continue
+                logger.warning(
+                    "model invoke failed session=%s step=%s error=%s",
+                    sid,
+                    step + 1,
+                    exc,
+                )
                 raise
-            logger.warning(
-                "provider rejected tool JSON; repaired XML session=%s step=%s tools=%s",
-                sid,
-                step + 1,
-                _tool_names(getattr(repaired, "tool_calls", None) or []),
-            )
-            response = repaired
+        if response is None:
+            raise RuntimeError("model invoke returned no response")
         messages.append(response)
         tool_calls = getattr(response, "tool_calls", None) or []
         content_preview = clip(message_text(getattr(response, "content", "")), 300)
@@ -264,21 +329,18 @@ async def run_broker_turn(
     )
     user_text = ctx.user_message.content if ctx.user_message else ""
     logger.debug(
-        "broker context session=%s role=%s open_matches=%s attention=%s history=%s has_situation=%s",
+        "broker context session=%s role=%s open_matches=%s attention=%s history=%s",
         ctx.session.id,
         packet.get("SESSION_ROLE"),
         len(packet.get("open_matches") or []),
         packet.get("attention_pointer"),
         len(history),
-        bool(packet.get("situation")),
     )
     human = (
         f"SESSION_ROLE: {packet.get('SESSION_ROLE')}\n"
         f"TRIGGER: {packet.get('TRIGGER')}\n\n"
         f"{_trigger_instruction(ctx)}\n\n"
     )
-    if packet.get("situation"):
-        human += f"situation:\n{packet.get('situation')}\n\n"
     human += (
         f"living_request:\n{json.dumps(packet.get('living_request'), ensure_ascii=False, default=str)}\n\n"
         f"open_matches:\n{json.dumps(packet.get('open_matches'), ensure_ascii=False, default=str)}\n\n"

@@ -20,13 +20,16 @@ Chat routes match the existing frontend:
 
 - `POST /broker/sessions`
 - `POST /broker/sessions/{id}/messages`
-- `POST /broker/matches/{id}/connect`
+- `POST /broker/matches/{id}/connect` — creates a direct chat (no phone number on the card)
+- `GET /broker/connections` — all 1:1 chats for the current user
+- `WS /broker/ws` — live messages (query `access_token`)
+- `POST /broker/push/subscribe` — Web Push
 
-Auth, user profiles, and contact cards are unchanged so the current Next.js app keeps working.
+Auth and user profiles are unchanged. Contact cards share name, email, and location only. After Connect, parties chat in-app over WebSockets (not Supabase Realtime).
 
 ## Data
 
-Broker tables are new (`agent_sessions`, `agent_messages`, `agent_requests`, `agent_matches`, `agent_events`, `agent_connections`, `agent_attachments`, `agent_attachment_requests`, `agent_attachment_grants`, `agent_attachment_shares`) so this service can share the same Postgres database as `backend/` without colliding. `user_profiles` is shared.
+Broker tables are new (`agent_sessions`, `agent_messages`, `agent_requests`, `agent_matches`, `agent_events`, `agent_connections`, `agent_connection_messages`, `agent_connection_attachments`, `agent_connection_reads`, `agent_push_subscriptions`, `agent_attachments`, `agent_attachment_requests`, `agent_attachment_grants`, `agent_attachment_shares`) so this service can share the same Postgres database as `backend/` without colliding. `user_profiles` is shared.
 
 Session files go to a private Supabase Storage bucket (`broker-attachments`). Set `SUPABASE_SERVICE_ROLE_KEY`. The agent classifies uploads from conversation as `public` (shareable) or `personal` (needs permission).
 

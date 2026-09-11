@@ -219,5 +219,90 @@ class BrokerPartyConnectionRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class ConnectionPeerRead(BaseModel):
+    user_id: str
+    name: str
+    location: str
+    request_title: str | None = None
+    request_summary: str | None = None
+
+
+class ConnectionAttachmentRead(BaseModel):
+    id: str
+    connection_id: str
+    message_id: str | None
+    kind: str
+    original_filename: str | None
+    content_type: str | None
+    size_bytes: int | None
+    content_url: str | None = None
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class ConnectionMessageRead(BaseModel):
+    id: str
+    connection_id: str
+    sender_user_id: str | None
+    kind: str
+    mine: bool = False
+    content: str
+    created_at: datetime
+    attachments: list[ConnectionAttachmentRead] = Field(default_factory=list)
+
+    model_config = {"from_attributes": True}
+
+
+class ConnectionSummaryRead(BaseModel):
+    id: str
+    match_id: str
+    status: str
+    peer: ConnectionPeerRead
+    last_message: ConnectionMessageRead | None = None
+    unread_count: int = 0
+    created_at: datetime
+    updated_at: datetime
+
+
+class ConnectionDetailRead(BaseModel):
+    connection: ConnectionSummaryRead
+    messages: list[ConnectionMessageRead]
+
+
+class ConnectionMessageCreate(BaseModel):
+    content: str = Field(default="", max_length=4000)
+    attachment_ids: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def require_text_or_attachments(self) -> ConnectionMessageCreate:
+        if not self.content.strip() and not self.attachment_ids:
+            raise ValueError("Send a message or at least one attachment.")
+        return self
+
+
+class PushSubscriptionCreate(BaseModel):
+    endpoint: str = Field(min_length=8, max_length=2000)
+    keys: dict[str, str]
+    user_agent: str | None = Field(default=None, max_length=255)
+
+    @model_validator(mode="after")
+    def require_push_keys(self) -> PushSubscriptionCreate:
+        p256dh = (self.keys or {}).get("p256dh")
+        auth = (self.keys or {}).get("auth")
+        if not p256dh or not auth:
+            raise ValueError("Push subscription keys must include p256dh and auth.")
+        return self
+
+
+class PushUnsubscribe(BaseModel):
+    endpoint: str = Field(min_length=8, max_length=2000)
+
+
+class VapidPublicKeyRead(BaseModel):
+    public_key: str
+    configured: bool = True
+
+
 def _public_details(details: dict) -> dict:
     return {key: value for key, value in details.items() if key != "semantic"}

@@ -52,6 +52,53 @@ export type BrokerPartyConnection = {
   updated_at: string
 }
 
+export type ConnectionPeer = {
+  user_id: string
+  name: string
+  location: string
+  request_title: string | null
+  request_summary: string | null
+}
+
+export type ConnectionAttachment = {
+  id: string
+  connection_id: string
+  message_id: string | null
+  kind: "file" | "image" | string
+  original_filename: string | null
+  content_type: string | null
+  size_bytes: number | null
+  content_url: string | null
+  created_at: string
+}
+
+export type ConnectionMessage = {
+  id: string
+  connection_id: string
+  sender_user_id: string | null
+  kind: "user" | "system" | string
+  mine: boolean
+  content: string
+  created_at: string
+  attachments: ConnectionAttachment[]
+}
+
+export type ConnectionSummary = {
+  id: string
+  match_id: string
+  status: string
+  peer: ConnectionPeer
+  last_message: ConnectionMessage | null
+  unread_count: number
+  created_at: string
+  updated_at: string
+}
+
+export type ConnectionDetail = {
+  connection: ConnectionSummary
+  messages: ConnectionMessage[]
+}
+
 export type BrokerSessionDetail = {
   session: BrokerSession
   messages: BrokerMessage[]
@@ -59,12 +106,22 @@ export type BrokerSessionDetail = {
   pending_upload_requests?: BrokerUploadRequest[]
 }
 
-function getBackendUrl() {
+export function getBrokerBackendUrl() {
   return (
     process.env.NEXT_PUBLIC_BACKEND_URL ||
     process.env.BACKEND_URL ||
     "http://127.0.0.1:8000"
   )
+}
+
+function getBackendUrl() {
+  return getBrokerBackendUrl()
+}
+
+export function brokerWebsocketUrl(accessToken: string) {
+  const http = getBrokerBackendUrl().replace(/\/$/, "")
+  const ws = http.replace(/^https:/i, "wss:").replace(/^http:/i, "ws:")
+  return `${ws}/broker/ws?access_token=${encodeURIComponent(accessToken)}`
 }
 
 async function brokerFetch<T>(
@@ -212,11 +269,99 @@ export function grantBrokerAttachment(
 }
 
 export function connectBrokerMatch(accessToken: string, matchId: string) {
-  return brokerFetch<BrokerPartyConnection>(
+  return brokerFetch<ConnectionSummary>(
     accessToken,
     `/broker/matches/${matchId}/connect`,
     {
       method: "POST"
     }
   )
+}
+
+export function listBrokerConnections(accessToken: string) {
+  return brokerFetch<ConnectionSummary[]>(accessToken, "/broker/connections")
+}
+
+export function getBrokerConnection(accessToken: string, connectionId: string) {
+  return brokerFetch<ConnectionDetail>(
+    accessToken,
+    `/broker/connections/${connectionId}`
+  )
+}
+
+export function sendConnectionMessage(
+  accessToken: string,
+  connectionId: string,
+  content: string,
+  attachmentIds: string[] = []
+) {
+  return brokerFetch<ConnectionMessage>(
+    accessToken,
+    `/broker/connections/${connectionId}/messages`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        content,
+        attachment_ids: attachmentIds
+      })
+    }
+  )
+}
+
+export async function uploadConnectionAttachment(
+  accessToken: string,
+  connectionId: string,
+  file: File
+) {
+  const body = new FormData()
+  body.append("file", file)
+
+  const response = await fetch(
+    `${getBackendUrl()}/broker/connections/${connectionId}/attachments`,
+    {
+      method: "POST",
+      headers: {
+        Authorization: `Bearer ${accessToken}`
+      },
+      body
+    }
+  )
+  if (!response.ok) {
+    const payload = await response.json().catch(() => null)
+    const detail =
+      typeof payload?.detail === "string"
+        ? payload.detail
+        : `Upload failed with status ${response.status}`
+    throw new Error(detail)
+  }
+  return (await response.json()) as ConnectionAttachment
+}
+
+export function markConnectionRead(accessToken: string, connectionId: string) {
+  return brokerFetch<ConnectionSummary>(
+    accessToken,
+    `/broker/connections/${connectionId}/read`,
+    { method: "POST" }
+  )
+}
+
+export function getPushPublicKey(accessToken: string) {
+  return brokerFetch<{ public_key: string; configured: boolean }>(
+    accessToken,
+    "/broker/push/vapid-public-key"
+  )
+}
+
+export function subscribePush(
+  accessToken: string,
+  subscription: {
+    endpoint: string
+    keys: { p256dh: string; auth: string }
+    user_agent?: string
+  }
+) {
+  return brokerFetch<void>(accessToken, "/broker/push/subscribe", {
+    method: "POST",
+    body: JSON.stringify(subscription)
+  })
 }

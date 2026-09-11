@@ -8,7 +8,7 @@ type ContactCardPayload = {
   contact: {
     name: string
     email: string | null
-    mobile_number: string
+    mobile_number?: string | null
     location: string
   }
   request: {
@@ -23,18 +23,20 @@ export function ContactCard({
   payload,
   connecting,
   connected,
-  onConnect
+  onConnect,
+  onOpenChat
 }: {
   payload: ContactCardPayload
   connecting: boolean
   connected: boolean
   onConnect: () => void
+  onOpenChat?: () => void
 }) {
   return (
     <div className="w-full min-w-56 space-y-4">
       <div>
         <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
-          Contact
+          Match
         </div>
         <div className="mt-1 text-base font-semibold text-ink">
           {payload.contact.name}
@@ -43,7 +45,6 @@ export function ContactCard({
       </div>
 
       <div className="grid gap-2 text-sm">
-        <InfoRow label="Mobile" value={payload.contact.mobile_number} />
         {payload.contact.email ? (
           <InfoRow label="Email" value={payload.contact.email} breakAll />
         ) : null}
@@ -52,14 +53,24 @@ export function ContactCard({
 
       <p className="text-xs leading-5 text-muted">{payload.request.summary}</p>
 
-      <button
-        type="button"
-        disabled={connecting || connected}
-        onClick={onConnect}
-        className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
-      >
-        {connected ? "Connected" : connecting ? "Connecting…" : "Connect"}
-      </button>
+      {connected ? (
+        <button
+          type="button"
+          onClick={onOpenChat}
+          className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48]"
+        >
+          Open chat
+        </button>
+      ) : (
+        <button
+          type="button"
+          disabled={connecting}
+          onClick={onConnect}
+          className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
+        >
+          {connecting ? "Connecting…" : "Connect"}
+        </button>
+      )}
     </div>
   )
 }

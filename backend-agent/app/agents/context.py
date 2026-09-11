@@ -54,32 +54,6 @@ def _event_snapshot(event) -> dict[str, Any]:
     }
 
 
-def match_situation(open_matches: list[dict[str, Any]], user_message: str | None) -> str:
-    """Ground the model in shared notebook + this message. Does not label the reply."""
-    if not open_matches:
-        return ""
-    lines = [
-        (
-            "You are one broker for every party on this match. This session's chat is "
-            "private. open_matches[].notebook is shared and is what the other party's "
-            "turn will see."
-        ),
-        (
-            "Decide from notebook.facts AND the new user_message together. Do not assume "
-            "the message answers outstanding — they may update the brief instead, answer "
-            "the question, do both, or neither."
-        ),
-        (
-            "If you need information from this user, ask in your final reply. "
-            "message_party(to='source'|'candidate') writes into that party's "
-            "private chat. update_notebook is agent memory only — humans do not see it."
-        ),
-    ]
-    if user_message and user_message.strip():
-        lines.append(f"user_message (raw): {user_message.strip()}")
-    return "\n".join(lines)
-
-
 async def resolve_session_role(ctx: ToolContext) -> SessionRole:
     if ctx.request is None:
         return "source"
@@ -118,7 +92,6 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
     return {
         "SESSION_ROLE": role,
         "TRIGGER": ctx.trigger,
-        "situation": match_situation(open_matches, user_text),
         "living_request": living,
         "open_matches": open_matches,
         "recent_events": recent_events,

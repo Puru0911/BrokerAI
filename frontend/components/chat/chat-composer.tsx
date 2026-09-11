@@ -22,6 +22,8 @@ type ChatComposerProps = {
   onFilesChange: (files: File[]) => void
   link: string
   onLinkChange: (value: string) => void
+  placeholder?: string
+  showLink?: boolean
 }
 
 const TEXTAREA_MAX_HEIGHT = 192
@@ -35,7 +37,9 @@ export function ChatComposer({
   files,
   onFilesChange,
   link,
-  onLinkChange
+  onLinkChange,
+  placeholder = "Describe what you need, or attach a file…",
+  showLink = true
 }: ChatComposerProps) {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const textareaRef = useRef<HTMLTextAreaElement | null>(null)
@@ -92,7 +96,7 @@ export function ChatComposer({
           </div>
         ) : null}
 
-        {linkOpen ? (
+        {showLink && linkOpen ? (
           <input
             value={link}
             onChange={(event) => onLinkChange(event.target.value)}
@@ -132,17 +136,19 @@ export function ChatComposer({
             onChange={(event) => onChange(event.target.value)}
             onKeyDown={handleKeyDown}
             disabled={disabled}
-            placeholder="Describe what you need, or attach a file…"
+            placeholder={placeholder}
             className="max-h-48 min-h-11 min-w-0 flex-1 resize-none bg-transparent px-2 py-2.5 text-sm leading-6 text-ink outline-none placeholder:text-muted/70 disabled:text-muted [overflow-wrap:anywhere] whitespace-pre-wrap break-words"
           />
-          <IconButton
-            label="Add a link"
-            disabled={disabled}
-            pressed={linkOpen}
-            onClick={() => setLinkOpen((open) => !open)}
-          >
-            <IconLink />
-          </IconButton>
+          {showLink ? (
+            <IconButton
+              label="Add a link"
+              disabled={disabled}
+              pressed={linkOpen}
+              onClick={() => setLinkOpen((open) => !open)}
+            >
+              <IconLink />
+            </IconButton>
+          ) : null}
           <button
             type="submit"
             disabled={!canSend}

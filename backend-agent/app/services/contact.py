@@ -91,6 +91,9 @@ async def create_party_connection(
     if existing is not None:
         match.status = MATCH_CONNECTED
         await clear_waiting_for_match(db, match)
+        from app.services.connections import seed_connection_chat
+
+        await seed_connection_chat(db, existing)
         return existing
 
     connection = AgentConnection(
@@ -103,6 +106,9 @@ async def create_party_connection(
     await db.flush()
     match.status = MATCH_CONNECTED
     await clear_waiting_for_match(db, match)
+    from app.services.connections import seed_connection_chat
+
+    await seed_connection_chat(db, connection)
     await add_event(
         db,
         match_id=match.id,
@@ -139,7 +145,6 @@ def _contact_card_message(
         "contact": {
             "name": contact_profile.name,
             "email": contact_profile.email,
-            "mobile_number": contact_profile.mobile_number,
             "location": contact_profile.location,
         },
         "request": {

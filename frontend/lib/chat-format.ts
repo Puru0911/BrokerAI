@@ -13,3 +13,10 @@ export function formatSessionTime(value: string) {
     minute: "2-digit"
   }).format(new Date(value))
 }
+
+export function connectionPreview(content: string | null | undefined, hasAttachments = false) {
+  const text = (content || "").trim()
+  if (text) return text
+  if (hasAttachments) return "Attachment"
+  return "Connected"
+}

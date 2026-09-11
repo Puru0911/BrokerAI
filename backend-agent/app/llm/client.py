@@ -9,6 +9,7 @@ from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_core.output_parsers import PydanticOutputParser
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
+from langchain_openrouter import ChatOpenRouter
 from pydantic import BaseModel
 
 from app.core.config import settings
@@ -93,10 +94,23 @@ def groq_model_uses_reasoning(model: str) -> bool:
     return any(marker in lowered for marker in _GROQ_REASONING_MARKERS)
 
 
+def openrouter_reasoning_config() -> dict[str, Any] | None:
+    """OpenRouter reasoning object, or None when the toggle is off."""
+    if not settings.OPENROUTER_REASONING_ENABLED:
+        return None
+    effort = (settings.OPENROUTER_REASONING_EFFORT or "medium").strip().lower()
+    return {
+        "enabled": True,
+        "effort": effort,
+        "exclude": bool(settings.OPENROUTER_REASONING_EXCLUDE),
+    }
+
+
 def build_chat_model(
     *,
     temperature: float,
     max_tokens: int = 1200,
+    use_reasoning: bool = True,
 ) -> BaseChatModel:
     if not is_llm_configured():
         raise RuntimeError(llm_configuration_error())
@@ -108,6 +122,16 @@ def build_chat_model(
             api_key=runtime_config.api_key,
             temperature=temperature,
             max_tokens=max_tokens,
+            use_reasoning=use_reasoning,
+        )
+    if runtime_config.provider == "openrouter":
+        return _build_openrouter_chat_model(
+            model=runtime_config.model,
+            api_key=runtime_config.api_key,
+            base_url=runtime_config.base_url,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            use_reasoning=use_reasoning,
         )
 
     return ChatOpenAI(
@@ -123,11 +147,14 @@ def build_chat_model(
 
 def build_broker_chat_model() -> BaseChatModel:
     """Chat model for the broker bind_tools loop."""
-    if resolve_llm_runtime_config().provider == "groq":
+    provider = resolve_llm_runtime_config().provider
+    if provider == "groq":
         return build_chat_model(
             temperature=1.0,
             max_tokens=settings.GROQ_MAX_COMPLETION_TOKENS,
         )
+    if provider == "openrouter" and openrouter_reasoning_config() is not None:
+        return build_chat_model(temperature=1.0, max_tokens=4096)
     return build_chat_model(temperature=0.35, max_tokens=4096)
 
 
@@ -137,6 +164,7 @@ def _build_groq_chat_model(
     api_key: str | None,
     temperature: float,
     max_tokens: int,
+    use_reasoning: bool = True,
 ) -> ChatGroq:
     """Use ChatGroq so Groq returns JSON tool_calls instead of Qwen XML."""
     kwargs: dict[str, Any] = {
@@ -147,7 +175,7 @@ def _build_groq_chat_model(
         "timeout": settings.LLM_REQUEST_TIMEOUT_SECONDS,
         "max_retries": 2,
     }
-    if groq_model_uses_reasoning(model):
+    if use_reasoning and groq_model_uses_reasoning(model):
         effort = (settings.GROQ_REASONING_EFFORT or "low").strip().lower()
         kwargs["max_tokens"] = min(max_tokens, settings.GROQ_MAX_COMPLETION_TOKENS)
         kwargs["reasoning_format"] = "parsed"
@@ -155,6 +183,37 @@ def _build_groq_chat_model(
         if effort != "none":
             kwargs["model_kwargs"] = {"top_p": 0.95}
     return ChatGroq(**kwargs)
+
+
+def _build_openrouter_chat_model(
+    *,
+    model: str,
+    api_key: str | None,
+    base_url: str,
+    temperature: float,
+    max_tokens: int,
+    use_reasoning: bool = True,
+) -> ChatOpenRouter:
+    """Use ChatOpenRouter so reasoning tokens stay out of tool JSON / content."""
+    reasoning = openrouter_reasoning_config() if use_reasoning else None
+    kwargs: dict[str, Any] = {
+        "model": model,
+        "api_key": api_key,
+        "base_url": base_url,
+        "temperature": temperature,
+        "max_tokens": max_tokens,
+        # ChatOpenRouter.timeout is milliseconds (SDK timeout_ms).
+        "timeout": int(settings.LLM_REQUEST_TIMEOUT_SECONDS * 1000),
+        "max_retries": 2,
+        "app_url": "http://localhost:3000",
+        "app_title": settings.APP_NAME,
+    }
+    if reasoning is not None:
+        # Full OpenRouter object (enabled/effort/exclude). The SDK currently
+        # serializes effort/summary; omit this dict entirely when the toggle is off.
+        kwargs["reasoning"] = reasoning
+        kwargs["top_p"] = 0.95
+    return ChatOpenRouter(**kwargs)
 
 
 def _strip_fences(text: str) -> str:
@@ -175,11 +234,19 @@ async def invoke_text_model(
     temperature: float,
     max_tokens: int = 800,
 ) -> str:
-    """Call the chat model and return plain text (no JSON contract)."""
+    """Call the chat model and return plain text (no JSON contract).
+
+    Reasoning is off: index profile generation does not need a thinking budget,
+    and sending one on free OpenRouter models has overloaded the upstream.
+    """
     if not is_llm_configured():
         raise RuntimeError(llm_configuration_error())
 
-    llm = build_chat_model(temperature=temperature, max_tokens=max_tokens)
+    llm = build_chat_model(
+        temperature=temperature,
+        max_tokens=max_tokens,
+        use_reasoning=False,
+    )
     result = await llm.ainvoke(
         [
             SystemMessage(content=system_prompt),

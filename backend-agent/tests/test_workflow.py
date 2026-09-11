@@ -1,6 +1,5 @@
 from datetime import UTC, datetime, timedelta
 
-from app.agents.context import match_situation
 from app.db.models import AgentMatch, AgentRequest
 from app.services.workflow import (
     CLOSE_REJECT,
@@ -192,16 +191,3 @@ def test_request_for_role_picks_source_or_candidate() -> None:
     )
     assert request_for_role(match, source, candidate, "source") is source
     assert request_for_role(match, source, candidate, "candidate") is candidate
-
-
-def test_situation_does_not_label_the_user_message_as_an_answer() -> None:
-    text = match_situation(
-        [{"match_id": "match-1", "notebook": {"facts": [], "outstanding": None}}],
-        "budget is 70 lakhs",
-    )
-    assert "user_message (raw): budget is 70 lakhs" in text
-    assert "Do not assume" in text
-    assert "one broker" in text.lower()
-    assert "message_party(to='source'|'candidate')" in text
-    assert "update_notebook is agent memory only" in text
-    assert match_situation([], "hello") == ""

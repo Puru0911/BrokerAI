@@ -279,3 +279,100 @@ class AgentConnection(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+    messages: Mapped[list[AgentConnectionMessage]] = relationship(
+        back_populates="connection",
+        cascade="all, delete-orphan",
+        order_by="AgentConnectionMessage.created_at",
+    )
+
+
+class AgentConnectionMessage(Base):
+    __tablename__ = "agent_connection_messages"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_connections.id", ondelete="CASCADE"),
+        index=True,
+    )
+    sender_user_id: Mapped[str | None] = mapped_column(String(64), index=True, nullable=True)
+    kind: Mapped[str] = mapped_column(String(16), default="user")
+    content: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    connection: Mapped[AgentConnection] = relationship(back_populates="messages")
+    attachments: Mapped[list[AgentConnectionAttachment]] = relationship(
+        back_populates="message",
+        cascade="all, delete-orphan",
+        order_by="AgentConnectionAttachment.created_at",
+    )
+
+
+class AgentConnectionAttachment(Base):
+    __tablename__ = "agent_connection_attachments"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_connections.id", ondelete="CASCADE"),
+        index=True,
+    )
+    message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_connection_messages.id", ondelete="CASCADE"),
+        nullable=True,
+        index=True,
+    )
+    sender_user_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(16), default="file")
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    content_type: Mapped[str | None] = mapped_column(String(127))
+    size_bytes: Mapped[int | None] = mapped_column(Integer)
+    storage_key: Mapped[str | None] = mapped_column(String(512))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+
+    message: Mapped[AgentConnectionMessage | None] = relationship(back_populates="attachments")
+
+
+class AgentConnectionReadState(Base):
+    __tablename__ = "agent_connection_reads"
+    __table_args__ = (
+        UniqueConstraint("connection_id", "user_id", name="uq_agent_connection_reads_pair"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    connection_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_connections.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    last_read_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    last_read_message_id: Mapped[str | None] = mapped_column(String(36))
+
+
+class AgentPushSubscription(Base):
+    __tablename__ = "agent_push_subscriptions"
+    __table_args__ = (UniqueConstraint("endpoint", name="uq_agent_push_subscriptions_endpoint"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    endpoint: Mapped[str] = mapped_column(Text)
+    p256dh: Mapped[str] = mapped_column(Text)
+    auth: Mapped[str] = mapped_column(Text)
+    user_agent: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        server_default=func.now(),
+        onupdate=func.now(),
+    )

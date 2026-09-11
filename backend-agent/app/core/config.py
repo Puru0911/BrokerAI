@@ -27,7 +27,10 @@ class Settings(BaseSettings):
     LLM_REQUEST_TIMEOUT_SECONDS: float = 60.0
     OPENROUTER_API_KEY: str | None = None
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
-    LLM_MODEL: str = "deepseek/deepseek-chat-v3-0324"
+    LLM_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
+    OPENROUTER_REASONING_ENABLED: bool = True
+    OPENROUTER_REASONING_EFFORT: str = "medium"
+    OPENROUTER_REASONING_EXCLUDE: bool = False
     GROQ_API_KEY: str | None = None
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
     GROQ_LLM_MODEL: str = "llama-3.3-70b-versatile"
@@ -41,6 +44,7 @@ class Settings(BaseSettings):
     CHROMA_REQUEST_COLLECTION: str = "agent_requests"
 
     AGENT_MAX_TOOL_STEPS: int = 8
+    AGENT_MODEL_INVOKE_RETRIES: int = 3
     MATCH_TIMEOUT_HOURS: int = 48
     MAX_OPEN_MATCHES_PER_REQUEST: int = 1
 
@@ -54,7 +58,13 @@ class Settings(BaseSettings):
     SUPABASE_STORAGE_BUCKET: str = "broker-attachments"
     ATTACHMENT_MAX_BYTES: int = 10_000_000
     ATTACHMENT_MAX_PER_SESSION: int = 20
+    ATTACHMENT_MAX_PER_CONNECTION: int = 100
     ATTACHMENT_SIGNED_URL_TTL_SECONDS: int = 3600
+
+    VAPID_PUBLIC_KEY: str | None = None
+    VAPID_PRIVATE_KEY: str | None = None
+    VAPID_SUBJECT: str = "mailto:broker@localhost"
+    VAPID_KEY_PATH: str = "./data/vapid.json"
 
 
 settings = Settings()

@@ -4,6 +4,17 @@ import { Spinner } from "@/components/icons"
 import { cn } from "@/lib/cn"
 import type { BrokerAttachment } from "@/lib/api/broker"
 
+export type StackAttachment = {
+  id: string
+  kind: string
+  content_type?: string | null
+  original_filename?: string | null
+  label?: string | null
+  url?: string | null
+  content_url?: string | null
+  share_class?: string | null
+}
+
 export type AttachmentRequestPayload = {
   kind: "broker_attachment_request"
   version: 1
@@ -51,7 +62,7 @@ export function AttachmentStack({
   attachments,
   inverted = false
 }: {
-  attachments: BrokerAttachment[]
+  attachments: StackAttachment[]
   inverted?: boolean
 }) {
   if (!attachments.length) return null
@@ -102,7 +113,7 @@ export function AttachmentChip({
   attachment,
   inverted = false
 }: {
-  attachment: BrokerAttachment
+  attachment: StackAttachment
   inverted?: boolean
 }) {
   const href =
