@@ -5,9 +5,9 @@ from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel, BeforeValidator, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from app.agents.context import ToolContext
+from app.agents.context import OutreachJob, ToolContext
 from app.agents.prompts import (
     TOOL_ACCEPT_MATCH,
     TOOL_GET_MATCH_EVENTS,
@@ -41,8 +41,6 @@ from app.services.workflow import (
     open_match_count,
     party_has_accepted,
     party_role,
-    request_for_role,
-    set_outstanding_question,
     should_reopen_closed_match,
     write_notebook,
 )
@@ -51,18 +49,26 @@ logger = logging.getLogger(__name__)
 
 
 class OpenMatchArgs(BaseModel):
-    candidate_id: str = Field(min_length=8, max_length=36)
+    candidate_id: str = Field(
+        min_length=8,
+        max_length=36,
+        description="The candidate brief to open a working match with.",
+    )
 
 
 class MessagePartyArgs(BaseModel):
-    match_id: str
-    to: Literal["source", "candidate"] = Field(
-        description="Which party on this match should receive the message."
+    model_config = ConfigDict(extra="ignore")
+
+    match_id: str = Field(
+        description="The match whose other party should be reached.",
     )
-    message: str = Field(min_length=1, max_length=1200)
-    expects_reply: bool | None = Field(
-        default=None,
-        description="Whether you are waiting on that party. Omit to infer from a question mark.",
+    context: str = Field(
+        min_length=1,
+        max_length=1200,
+        description=(
+            "Why the other party should be reached and what they need to hear "
+            "or answer. The later turn writes the finished wording."
+        ),
     )
 
 
@@ -75,12 +81,12 @@ class UpdateNotebookArgs(BaseModel):
     agent_note: str | None = Field(
         default=None,
         max_length=2000,
-        description="What you inferred, what is still unknown, and why it matters for the next turn.",
+        description="Inference, unknowns, and why they matter for later turns.",
     )
     next_action: str | None = Field(
         default=None,
         max_length=800,
-        description="What the next turn should do and which party to contact.",
+        description="Intended follow-through and which party it concerns.",
     )
     waiting_on: Literal["source", "candidate", "none"] | None = Field(
         default=None,
@@ -95,15 +101,19 @@ class UpdateNotebookArgs(BaseModel):
 
 class MatchIdReasonArgs(BaseModel):
     match_id: str
-    reason: str = Field(default="", max_length=400)
+    reason: str = Field(
+        default="",
+        max_length=400,
+        description="Short note on why this match is being closed.",
+    )
 
 
 class AcceptMatchArgs(BaseModel):
-    match_id: str
+    match_id: str = Field(description="The match this side is agreeing to.")
 
 
 class GetMatchEventsArgs(BaseModel):
-    match_id: str
+    match_id: str = Field(description="The match whose history and notebook to load.")
 
 
 async def _deliver_side(
@@ -165,13 +175,19 @@ async def _close_match(
         match.id,
         reason_code,
     )
-    return json_result(ok=True, match_id=match.id, status=match.status, close_reason=reason_code)
+    return json_result(
+        ok=True,
+        match_id=match.id,
+        status=match.status,
+        close_reason=reason_code,
+        outcome=f"Match closed ({reason_code}).",
+    )
 
 
 def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
     async def open_match(args: OpenMatchArgs) -> str:
         if ctx.request is None:
-            return json_result(ok=False, error="Save the request before opening a match.")
+            return json_result(ok=False, error="No brief is saved for this session.")
         if args.candidate_id == ctx.request.id:
             return json_result(ok=False, error="Cannot open a match against the same request.")
         candidate = await ctx.db.get(AgentRequest, args.candidate_id)
@@ -198,7 +214,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             if await open_match_count(ctx.db, ctx.request.id) >= settings.MAX_OPEN_MATCHES_PER_REQUEST:
                 return json_result(
                     ok=False,
-                    error="An open match already exists. Skip or reject it before opening another.",
+                    error="Open-match limit reached.",
                 )
             match = AgentMatch(
                 source_request_id=ctx.request.id,
@@ -236,58 +252,61 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             candidate_id=candidate.id,
             reused=reused,
             other_party=redacted_living_request(candidate),
-            hint=(
-                "If either party needs a question or status in their chat, call "
-                "message_party with to='source' or to='candidate'."
-            ),
+            outcome="Match opened. No message sent.",
         )
 
     async def message_party(args: MessagePartyArgs) -> str:
-        match, current, other, source = await owned_match(ctx, args.match_id)
+        if ctx.trigger == "match_context":
+            return json_result(
+                ok=False,
+                error="This turn is already the other party's chat. Reply here. Do not contact them again now.",
+            )
+        match, current, other, _source = await owned_match(ctx, args.match_id)
         if match.status not in {MATCH_OPEN, MATCH_ACCEPTED}:
             return json_result(ok=False, error="This match is not open for messaging.")
-        candidate = other if current.id == source.id else current
-        target = request_for_role(match, source, candidate, args.to)
+        target = other
+        to = party_role(match, target)
         if target.id == current.id:
             return json_result(
                 ok=False,
-                error=(
-                    "to is this chat. Put that text in your final reply. "
-                    "message_party only delivers to the other party on the match."
-                ),
-                to=args.to,
+                error="The other party could not be resolved. This person's text is the final reply.",
             )
-        identity_open = match.status in {MATCH_ACCEPTED, MATCH_CONNECTED}
-        body = args.message.strip()
-        await _deliver_side(
-            ctx,
-            match,
-            target,
-            body,
-            to_current_user=False,
-            redact=not identity_open,
+        context = args.context.strip()
+        job = OutreachJob(
+            match_id=match.id,
+            to=to,
+            context=context,
+            from_session_id=ctx.session.id,
         )
+        if any(
+            item.match_id == job.match_id and item.to == job.to for item in ctx.queued_outreach
+        ):
+            return json_result(ok=True, match_id=match.id, to=to, queued=True, duplicate=True)
+        ctx.queued_outreach.append(job)
+        target.waiting_match_id = match.id
         match.last_activity_at = datetime.now(UTC)
         match.expires_at = expiry_from_now()
-        expects_reply = args.expects_reply
-        if expects_reply is None:
-            expects_reply = "?" in body or "？" in body
-        if expects_reply:
-            set_outstanding_question(match, waiting_on=args.to, question=body)
+        await add_event(
+            ctx.db,
+            match_id=match.id,
+            event_type="outreach_queued",
+            session_id=ctx.session.id,
+            user_id=ctx.profile.id,
+            payload={"to": to, "to_session_id": target.session_id},
+        )
         logger.info(
-            "message_party session=%s match_id=%s to=%s expects_reply=%s",
+            "message_party queued session=%s match_id=%s to=%s to_session=%s",
             ctx.session.id,
             match.id,
-            args.to,
-            expects_reply,
+            to,
+            target.session_id,
         )
         return json_result(
             ok=True,
             match_id=match.id,
-            sent=[args.to],
-            to=args.to,
-            expects_reply=expects_reply,
-            hint="This session still needs your final reply for the person you are talking to.",
+            to=to,
+            queued=True,
+            outcome="Contacting them separately. This chat still needs your final reply.",
         )
 
     async def update_notebook(args: UpdateNotebookArgs) -> str:
@@ -331,23 +350,18 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             },
         )
         outstanding = notebook.get("outstanding") or {}
-        hint = (
-            "Notebook is agent memory only — humans do not see it. If a party needs "
-            "text in their chat, call message_party with to='source' or to='candidate'."
-        )
-        if outstanding.get("waiting_on") == role:
-            hint += (
-                " waiting_on still points at the person who just spoke; set waiting_on "
-                "to the other side or none if they answered."
-            )
+        waiting_on = outstanding.get("waiting_on")
+        outcome = "Notebook updated."
+        if waiting_on:
+            outcome = f"Notebook updated. waiting_on={waiting_on}."
         logger.info(
             "update_notebook session=%s match_id=%s facts=%s waiting_on=%s",
             ctx.session.id,
             match.id,
             len(facts),
-            outstanding.get("waiting_on"),
+            waiting_on,
         )
-        return json_result(ok=True, notebook=notebook, hint=hint)
+        return json_result(ok=True, notebook=notebook, outcome=outcome)
 
     async def skip_match(args: MatchIdReasonArgs) -> str:
         return await _close_match(ctx, args.match_id, "skip", args.reason)
@@ -358,7 +372,13 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
     async def accept_match(args: AcceptMatchArgs) -> str:
         match, current, other, _source = await owned_match(ctx, args.match_id)
         if match.status == MATCH_CONNECTED:
-            return json_result(ok=True, match_id=match.id, status=match.status, already_connected=True)
+            return json_result(
+                ok=True,
+                match_id=match.id,
+                status=match.status,
+                already_connected=True,
+                outcome="Already connected.",
+            )
         if match.status == MATCH_CLOSED:
             return json_result(ok=False, error="A closed match cannot be accepted.")
 
@@ -380,6 +400,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 error="The other side has not agreed to the same terms yet.",
                 accepted_by_you=True,
                 match_complete=False,
+                outcome="Your acceptance recorded. Other side has not accepted.",
             )
 
         match.status = MATCH_ACCEPTED
@@ -393,7 +414,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             match_id=match.id,
             match_complete=True,
             contact_cards=len(cards),
-            hint="Call share_contacts if cards were not delivered.",
+            outcome=f"Both sides accepted. Contact cards delivered: {len(cards)}.",
         )
 
     async def get_match_events(args: GetMatchEventsArgs) -> str:
@@ -413,6 +434,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 }
                 for event in events
             ],
+            outcome=f"Loaded {len(events)} event(s). Status {match.status}.",
         )
 
     return [

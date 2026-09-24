@@ -1,12 +1,16 @@
 from __future__ import annotations
 
-import base64
-import json
 from dataclasses import dataclass
-from typing import Any
 
 from fastapi import Header, HTTPException, status
+from jwt.exceptions import (
+    ExpiredSignatureError,
+    InvalidAudienceError,
+    InvalidIssuerError,
+    InvalidTokenError,
+)
 
+from app.core.auth import AuthNotConfiguredError, decode_access_token, job_secret_matches
 from app.core.config import settings
 
 
@@ -16,23 +20,24 @@ class CurrentUser:
     email: str | None
 
 
-def _decode_jwt_payload(token: str) -> dict[str, Any]:
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise ValueError("JWT must have three segments")
+def _dev_user_from_token(token: str) -> CurrentUser | None:
+    if not token.startswith("dev:"):
+        return None
+    if settings.ENV.strip().lower() != "local":
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Dev bearer tokens are disabled outside ENV=local",
+        )
+    email = token.removeprefix("dev:").strip().lower()
+    if not email or "@" not in email:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid dev bearer token",
+        )
+    return CurrentUser(id=f"dev:{email}", email=email)
 
-    payload = parts[1]
-    padded_payload = payload + "=" * (-len(payload) % 4)
-    decoded = base64.urlsafe_b64decode(padded_payload.encode("utf-8"))
-    parsed_payload = json.loads(decoded)
 
-    if not isinstance(parsed_payload, dict):
-        raise ValueError("JWT payload must be an object")
-
-    return parsed_payload
-
-
-def user_from_access_token(token: str) -> CurrentUser:
+async def user_from_access_token(token: str) -> CurrentUser:
     cleaned = token.strip()
     if not cleaned:
         raise HTTPException(
@@ -40,32 +45,43 @@ def user_from_access_token(token: str) -> CurrentUser:
             detail="Missing bearer token",
         )
 
-    if settings.ENV == "local" and cleaned.startswith("dev:"):
-        email = cleaned.removeprefix("dev:").strip().lower()
-        if not email or "@" not in email:
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid dev bearer token",
-            )
-        return CurrentUser(id=f"dev:{email}", email=email)
+    dev_user = _dev_user_from_token(cleaned)
+    if dev_user is not None:
+        return dev_user
 
     try:
-        payload = _decode_jwt_payload(cleaned)
-    except Exception as exc:
+        payload = await decode_access_token(cleaned)
+    except AuthNotConfiguredError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=str(exc),
+        ) from exc
+    except ExpiredSignatureError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token has expired",
+        ) from exc
+    except InvalidAudienceError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token audience is invalid",
+        ) from exc
+    except InvalidIssuerError as exc:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Bearer token issuer is invalid",
+        ) from exc
+    except InvalidTokenError as exc:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid bearer token",
         ) from exc
 
-    user_id = payload.get("sub")
-    if not isinstance(user_id, str) or not user_id:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Bearer token is missing a subject",
-        )
-
     email = payload.get("email")
-    return CurrentUser(id=user_id, email=email if isinstance(email, str) else None)
+    return CurrentUser(
+        id=str(payload["sub"]),
+        email=email if isinstance(email, str) else None,
+    )
 
 
 async def get_current_user(authorization: str | None = Header(default=None)) -> CurrentUser:
@@ -74,4 +90,20 @@ async def get_current_user(authorization: str | None = Header(default=None)) -> 
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Missing bearer token",
         )
-    return user_from_access_token(authorization.removeprefix("Bearer ").strip())
+    return await user_from_access_token(authorization.removeprefix("Bearer ").strip())
+
+
+async def require_job_secret(
+    x_job_secret: str | None = Header(default=None, alias="X-Job-Secret"),
+) -> None:
+    expected = (settings.INTERNAL_JOB_SECRET or "").strip()
+    if len(expected) < 16:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="INTERNAL_JOB_SECRET is not configured.",
+        )
+    if not job_secret_matches(x_job_secret):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid job secret",
+        )

@@ -24,16 +24,20 @@ logger = logging.getLogger(__name__)
 
 
 class EvaluatePairArgs(BaseModel):
-    candidate_id: str = Field(min_length=8, max_length=36)
+    candidate_id: str = Field(
+        min_length=8,
+        max_length=36,
+        description="The candidate brief to screen against this session's living brief.",
+    )
 
 
 async def _run_search(ctx: ToolContext) -> str:
     if ctx.request is None:
         logger.info("search blocked session=%s reason=no_request", ctx.session.id)
-        return json_result(ok=False, error="Save the request before searching.")
+        return json_result(ok=False, error="No brief is saved for this session.")
     if ctx.request.indexed_at is None:
         logger.info("search blocked session=%s request_id=%s reason=not_indexed", ctx.session.id, ctx.request.id)
-        return json_result(ok=False, error="Call index_request before searching.")
+        return json_result(ok=False, error="This brief is not indexed.")
     matches = await retrieve_similar_requests(ctx.db, ctx.request, 5)
     ctx.searched_this_turn = True
     logger.info(
@@ -53,7 +57,7 @@ async def _run_search(ctx: ToolContext) -> str:
             }
             for candidate, distance in matches
         ],
-        hint="Call evaluate_pair on each new candidate_id before open_match.",
+        outcome=f"Retrieved {len(matches)} candidate(s).",
     )
 
 
@@ -66,7 +70,7 @@ def build_search_tools(ctx: ToolContext) -> list[BaseTool]:
 
     async def evaluate_pair_tool(args: EvaluatePairArgs) -> str:
         if ctx.request is None:
-            return json_result(ok=False, error="Save the request before evaluating a pair.")
+            return json_result(ok=False, error="No brief is saved for this session.")
         candidate = await ctx.db.get(AgentRequest, args.candidate_id)
         if candidate is None:
             return json_result(ok=False, error="Candidate request not found.")
@@ -97,6 +101,10 @@ def build_search_tools(ctx: ToolContext) -> list[BaseTool]:
             ok=True,
             candidate_id=candidate.id,
             evaluation=evaluation.model_dump(),
+            outcome=(
+                f"Verdict {evaluation.verdict}; "
+                f"recommended_action {evaluation.recommended_action}."
+            ),
         )
 
     return [

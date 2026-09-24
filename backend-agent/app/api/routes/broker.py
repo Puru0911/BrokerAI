@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
-from fastapi.responses import RedirectResponse
+from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -42,12 +42,13 @@ from app.services.attachments import (
     create_link_attachment,
     delete_attachment,
     list_pending_upload_requests,
+    load_attachment_bytes,
     record_grant,
+    sanitize_filename,
     serialize_messages,
     serialize_session_attachments,
     serialize_upload_requests,
     share_attachment_to_match,
-    signed_content_url,
     to_attachment_read,
     viewer_can_access,
 )
@@ -56,8 +57,8 @@ from app.services.contact import create_party_connection, share_match_contacts
 from app.services.orchestrator import (
     create_session_with_agent,
     handle_session_message,
-    process_stale_matches,
 )
+from app.services.outreach import schedule_outreach
 from app.services.session_delete import delete_session_cascade
 from app.services.storage import StorageNotConfiguredError
 from app.services.workflow import get_session_request, load_pair_requests
@@ -116,7 +117,11 @@ async def _session_detail(
         result = await db.execute(
             select(AgentMessage)
             .where(AgentMessage.session_id == session.id)
-            .order_by(AgentMessage.created_at)
+            .order_by(
+                AgentMessage.created_at,
+                AgentMessage.role.desc(),
+                AgentMessage.id,
+            )
         )
         messages = list(result.scalars().all())
     if request is None:
@@ -305,20 +310,6 @@ async def connect_parties(
     return summary
 
 
-@router.post("/mediations/process-stale", response_model=list[BrokerMatchRead])
-async def process_stale_route(
-    limit: int = 50,
-    current_user: CurrentUser = Depends(get_current_user),
-    db: AsyncSession = Depends(get_db),
-) -> list[AgentMatch]:
-    await _require_profile(db, current_user)
-    stale = await process_stale_matches(db, min(max(limit, 1), 100))
-    await db.commit()
-    for match in stale:
-        await db.refresh(match)
-    return stale
-
-
 @router.post("/sessions", response_model=BrokerSessionDetail, status_code=status.HTTP_201_CREATED)
 async def create_session(
     payload: BrokerSessionCreate,
@@ -332,6 +323,7 @@ async def create_session(
         initial_message=payload.initial_message,
     )
     await db.commit()
+    schedule_outreach(result.outreach)
     await db.refresh(result.session)
     return await _session_detail(
         db,
@@ -392,7 +384,7 @@ async def add_message(
     profile = await _require_profile(db, current_user)
     session = await _get_owned_session(session_id, db, profile)
     try:
-        messages = await handle_session_message(
+        turn = await handle_session_message(
             db=db,
             profile=profile,
             session=session,
@@ -401,10 +393,10 @@ async def add_message(
         )
     except AttachmentError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
+    payload = await serialize_messages(db, turn.messages, viewer_user_id=profile.id)
     await db.commit()
-    for message in messages:
-        await db.refresh(message)
-    return await serialize_messages(db, messages, viewer_user_id=profile.id)
+    schedule_outreach(turn.outreach)
+    return payload
 
 
 @router.get("/sessions/{session_id}/attachments", response_model=list[BrokerAttachmentRead])
@@ -537,7 +529,7 @@ async def download_attachment(
     attachment_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     profile = await _require_profile(db, current_user)
     attachment = await db.get(AgentAttachment, attachment_id)
     if attachment is None or attachment.status != "ready":
@@ -546,13 +538,21 @@ async def download_attachment(
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     if attachment.kind == "url" and attachment.url:
         return RedirectResponse(attachment.url)
-    content_url = await signed_content_url(attachment)
-    if not content_url:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="File storage is not available right now.",
-        )
-    return RedirectResponse(content_url)
+    try:
+        data, content_type = await load_attachment_bytes(attachment)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+    except StorageNotConfiguredError as exc:
+        raise _attachment_http_error(exc) from exc
+    filename = sanitize_filename(attachment.original_filename or attachment.label or "file")
+    return Response(
+        content=data,
+        media_type=content_type or attachment.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @router.post("/attachments/{attachment_id}/grants", response_model=BrokerAttachmentRead)

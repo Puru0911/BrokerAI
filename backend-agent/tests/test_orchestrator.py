@@ -1,4 +1,5 @@
 from app.agents.tools.match_tools import MessagePartyArgs, UpdateNotebookArgs
+from app.db.models.broker import AgentMessage, utc_now
 from app.services import orchestrator as orchestrator_mod
 
 
@@ -11,12 +12,30 @@ def test_user_message_path_does_not_auto_start_request_ready() -> None:
     assert not hasattr(orchestrator_mod, "assistant_awaiting_user")
 
 
-def test_message_party_requires_explicit_party() -> None:
-    args = MessagePartyArgs(match_id="match-1", to="source", message="Are you still interested?")
-    assert args.to == "source"
-    assert args.expects_reply is None
-    candidate = MessagePartyArgs(match_id="match-1", to="candidate", message="Status update.")
-    assert candidate.to == "candidate"
+def test_message_party_does_not_accept_to() -> None:
+    args = MessagePartyArgs(
+        match_id="match-1",
+        context="They answered location and price. Ask if those terms work.",
+        to="source",
+    )
+    assert "to" not in MessagePartyArgs.model_fields
+    assert "to" not in args.model_dump()
+    assert "location" in args.context
+    schema = MessagePartyArgs.model_json_schema()
+    assert "to" not in schema.get("properties", {})
+    required = schema.get("required") or []
+    assert "match_id" in required
+    assert "context" in required
+    assert "to" not in required
+
+
+def test_agent_message_uses_python_created_at_default() -> None:
+    column = AgentMessage.__table__.c.created_at
+    assert column.default is not None
+    assert column.default.is_callable
+    assert column.default.arg.__name__ == "utc_now"
+    stamp = utc_now()
+    assert stamp.tzinfo is not None
 
 
 def test_update_notebook_args_allow_plan_without_facts() -> None:

@@ -33,7 +33,6 @@ from app.services.workflow import (
     MATCH_CONNECTED,
     MATCH_OPEN,
     add_event,
-    counterpart_request_id,
     load_pair_requests,
 )
 
@@ -114,6 +113,55 @@ def can_share_directly(share_class: str) -> bool:
     return share_class == SHARE_PUBLIC
 
 
+def counterpart_file_inventory(
+    listings: list[dict[str, Any]],
+    shared_ids: set[str] | None = None,
+) -> dict[str, Any]:
+    """What the other room can know: public files listed, personal as purpose only."""
+    shared = shared_ids or set()
+    public: list[dict[str, Any]] = []
+    personal: list[dict[str, Any]] = []
+    pending_count = 0
+    for item in listings:
+        share_class = item.get("share_class")
+        if share_class == SHARE_PUBLIC:
+            public.append(
+                {
+                    "id": item.get("id"),
+                    "kind": item.get("kind"),
+                    "purpose": item.get("purpose"),
+                    "label": item.get("label"),
+                    "content_type": item.get("content_type"),
+                    "shared": item.get("id") in shared,
+                }
+            )
+        elif share_class == SHARE_PERSONAL:
+            personal.append({"purpose": item.get("purpose")})
+        else:
+            pending_count += 1
+    return {
+        "public": public,
+        "personal": personal,
+        "personal_count": len(personal),
+        "pending_count": pending_count,
+    }
+
+
+def owner_and_recipient_requests(
+    source: Any,
+    candidate: Any,
+    attachment: Any,
+) -> tuple[Any, Any] | tuple[None, None]:
+    """Owner is the party that holds the file. Recipient is the other party on the match."""
+    session_id = getattr(attachment, "session_id", None)
+    user_id = getattr(attachment, "user_id", None)
+    if session_id == source.session_id or user_id == source.user_id:
+        return source, candidate
+    if session_id == candidate.session_id or user_id == candidate.user_id:
+        return candidate, source
+    return None, None
+
+
 def extract_urls(text: str) -> list[str]:
     found: list[str] = []
     for match in URL_RE.findall(text or ""):
@@ -168,17 +216,23 @@ def public_attachment_payload(
     return payload
 
 
-async def signed_content_url(attachment: AgentAttachment) -> str | None:
+def attachment_content_path(attachment: AgentAttachment) -> str | None:
+    if attachment.kind == KIND_URL:
+        return None
     if attachment.kind != KIND_FILE or not attachment.storage_key:
         return None
-    try:
-        return await get_attachment_store().sign(
-            attachment.storage_key,
-            expires_in=settings.ATTACHMENT_SIGNED_URL_TTL_SECONDS,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("signed url failed attachment=%s error=%s", attachment.id, exc)
-        return None
+    return f"/broker/attachments/{attachment.id}/content"
+
+
+async def signed_content_url(attachment: AgentAttachment) -> str | None:
+    """Return the authenticated download path for a stored file."""
+    return attachment_content_path(attachment)
+
+
+async def load_attachment_bytes(attachment: AgentAttachment) -> tuple[bytes, str]:
+    if not attachment.storage_key:
+        raise FileNotFoundError(attachment.id)
+    return await get_attachment_store().fetch(attachment.storage_key)
 
 
 async def count_session_attachments(db: AsyncSession, session_id: str) -> int:
@@ -624,80 +678,152 @@ async def record_grant(
     return existing
 
 
+def gallery_title(attachments: list[AgentAttachment]) -> str:
+    """One title for a set of files, so listing photos are not 'photo 1', 'photo 2'."""
+    if not attachments:
+        return "Shared files"
+    labels = [
+        (item.label or item.original_filename or "").strip() for item in attachments
+    ]
+    stripped = [
+        re.sub(r"\s+photo\s+\d+\s*$", "", label, flags=re.IGNORECASE).strip()
+        for label in labels
+    ]
+    if stripped and all(item and item == stripped[0] for item in stripped):
+        return stripped[0]
+    purposes = {item.purpose for item in attachments if item.purpose}
+    if purposes == {"listing_photos"}:
+        return "Listing photos"
+    if all(is_image_type(item.content_type) for item in attachments):
+        if len(attachments) == 1:
+            return labels[0] or "Photo"
+        return "Photos"
+    if len(attachments) == 1:
+        return labels[0] or "Shared file"
+    return "Shared files"
+
+
+def _share_card_item(attachment: AgentAttachment) -> dict[str, Any]:
+    include_url = attachment.kind == KIND_URL and attachment.share_class == SHARE_PUBLIC
+    return {
+        "id": attachment.id,
+        "kind": attachment.kind,
+        "label": attachment.label,
+        "purpose": attachment.purpose,
+        "content_type": attachment.content_type,
+        "original_filename": attachment.original_filename,
+        "url": attachment.url if include_url else None,
+    }
+
+
 async def share_attachment_to_match(
     db: AsyncSession,
     *,
     match: AgentMatch,
     attachment: AgentAttachment,
-    from_request: AgentRequest,
+    from_request: AgentRequest | None = None,
 ) -> tuple[AgentAttachmentShare | None, AgentMessage | None, str]:
-    """Share if allowed. Returns (share, other-party message, status)."""
-    if match.status not in SHAREABLE_MATCH_STATUSES:
-        return None, None, "match_closed"
-    if attachment.status != STATUS_READY:
-        return None, None, "missing"
-
-    existing_share_result = await db.execute(
-        select(AgentAttachmentShare).where(
-            AgentAttachmentShare.attachment_id == attachment.id,
-            AgentAttachmentShare.match_id == match.id,
-        )
+    """Deliver one file. Prefer share_attachments_to_match for a set."""
+    shares, message, statuses = await share_attachments_to_match(
+        db,
+        match=match,
+        attachments=[attachment],
+        from_request=from_request,
     )
-    existing_share = existing_share_result.scalar_one_or_none()
-    if existing_share is not None:
-        return existing_share, None, "already_shared"
+    status = statuses.get(attachment.id, "missing")
+    share = shares[0] if shares else None
+    return share, message, status
 
-    grant = await get_grant(db, attachment.id, match.id)
-    if not can_share_directly(attachment.share_class) and (
-        grant is None or grant.status != "granted"
-    ):
-        return None, None, "needs_permission"
+
+async def share_attachments_to_match(
+    db: AsyncSession,
+    *,
+    match: AgentMatch,
+    attachments: list[AgentAttachment],
+    from_request: AgentRequest | None = None,
+) -> tuple[list[AgentAttachmentShare], AgentMessage | None, dict[str, str]]:
+    """Deliver many files as one gallery card. Personal items still need a grant."""
+    statuses: dict[str, str] = {}
+    if match.status not in SHAREABLE_MATCH_STATUSES:
+        return [], None, {item.id: "match_closed" for item in attachments}
 
     source, candidate = await load_pair_requests(db, match)
     if source is None or candidate is None:
-        return None, None, "missing"
-    other_id = counterpart_request_id(match, from_request)
-    other = candidate if other_id == candidate.id else source
+        return [], None, {item.id: "missing" for item in attachments}
 
-    include_url = attachment.kind == KIND_URL and attachment.share_class == SHARE_PUBLIC
+    deliverable: list[AgentAttachment] = []
+    recipient = None
+    owner = None
+    for attachment in attachments:
+        if attachment.status != STATUS_READY:
+            statuses[attachment.id] = "missing"
+            continue
+        existing_share_result = await db.execute(
+            select(AgentAttachmentShare).where(
+                AgentAttachmentShare.attachment_id == attachment.id,
+                AgentAttachmentShare.match_id == match.id,
+            )
+        )
+        if existing_share_result.scalar_one_or_none() is not None:
+            statuses[attachment.id] = "already_shared"
+            continue
+        grant = await get_grant(db, attachment.id, match.id)
+        if not can_share_directly(attachment.share_class) and (
+            grant is None or grant.status != "granted"
+        ):
+            statuses[attachment.id] = "needs_permission"
+            continue
+        pair = owner_and_recipient_requests(source, candidate, attachment)
+        if pair[0] is None or pair[1] is None:
+            statuses[attachment.id] = "missing"
+            continue
+        if recipient is None:
+            owner, recipient = pair
+        elif pair[1].id != recipient.id:
+            statuses[attachment.id] = "missing"
+            continue
+        deliverable.append(attachment)
+
+    if not deliverable or recipient is None or owner is None:
+        return [], None, statuses
+
     card = {
         "kind": ATTACHMENT_SHARE_KIND,
         "version": CARD_VERSION,
         "match_id": match.id,
-        "title": attachment.label or attachment.original_filename or "Shared file",
-        "attachments": [
-            {
-                "id": attachment.id,
-                "kind": attachment.kind,
-                "label": attachment.label,
-                "purpose": attachment.purpose,
-                "content_type": attachment.content_type,
-                "original_filename": attachment.original_filename,
-                "url": attachment.url if include_url else None,
-            }
-        ],
+        "title": gallery_title(deliverable),
+        "attachments": [_share_card_item(item) for item in deliverable],
     }
-    message = _card_message(other.session_id, card)
+    message = _card_message(recipient.session_id, card)
     db.add(message)
     await db.flush()
-    share = AgentAttachmentShare(
-        attachment_id=attachment.id,
-        match_id=match.id,
-        from_user_id=attachment.user_id,
-        to_request_id=other.id,
-        shared_message_id=message.id,
-    )
-    db.add(share)
+
+    shares: list[AgentAttachmentShare] = []
+    event_session_id = from_request.session_id if from_request is not None else owner.session_id
+    for attachment in deliverable:
+        share = AgentAttachmentShare(
+            attachment_id=attachment.id,
+            match_id=match.id,
+            from_user_id=attachment.user_id,
+            to_request_id=recipient.id,
+            shared_message_id=message.id,
+        )
+        db.add(share)
+        shares.append(share)
+        statuses[attachment.id] = "shared"
     await db.flush()
     await add_event(
         db,
         match_id=match.id,
         event_type="attachment_shared",
-        session_id=from_request.session_id,
-        user_id=attachment.user_id,
-        payload={"attachment_id": attachment.id, "to_session_id": other.session_id},
+        session_id=event_session_id,
+        user_id=deliverable[0].user_id,
+        payload={
+            "attachment_ids": [item.id for item in deliverable],
+            "to_session_id": recipient.session_id,
+        },
     )
-    return share, message, "shared"
+    return shares, message, statuses
 
 
 async def delete_attachment(db: AsyncSession, attachment: AgentAttachment) -> None:
@@ -737,7 +863,9 @@ async def attachments_for_messages(
         return {}
     message_ids = [message.id for message in messages]
     result = await db.execute(
-        select(AgentAttachment).where(
+        select(AgentAttachment)
+        .execution_options(populate_existing=True)
+        .where(
             AgentAttachment.status == STATUS_READY,
             AgentAttachment.message_id.in_(message_ids),
         )
@@ -778,7 +906,7 @@ async def to_attachment_read(
 ) -> BrokerAttachmentRead:
     content_url = None
     if include_secrets and attachment.kind == KIND_FILE:
-        content_url = await signed_content_url(attachment)
+        content_url = attachment_content_path(attachment)
     return BrokerAttachmentRead.from_attachment(
         attachment,
         include_url=include_secrets and attachment.kind == KIND_URL,

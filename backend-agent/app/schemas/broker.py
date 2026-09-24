@@ -41,6 +41,7 @@ class BrokerAttachmentGrantCreate(BaseModel):
 class BrokerAttachmentRead(BaseModel):
     id: str
     session_id: str
+    message_id: str | None = None
     kind: str
     share_class: str
     label: str | None
@@ -67,6 +68,7 @@ class BrokerAttachmentRead(BaseModel):
         return cls(
             id=attachment.id,
             session_id=attachment.session_id,
+            message_id=attachment.message_id,
             kind=attachment.kind,
             share_class=attachment.share_class,
             label=attachment.label,

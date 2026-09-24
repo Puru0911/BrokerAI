@@ -44,7 +44,7 @@ async def owned_match(
     match_id: str,
 ) -> tuple[AgentMatch, AgentRequest, AgentRequest, AgentRequest]:
     if ctx.request is None:
-        raise ValueError("Save the current user's brief before working a match.")
+        raise ValueError("No brief is saved for this session.")
     match = await ctx.db.get(AgentMatch, match_id)
     if match is None:
         raise ValueError("Match not found.")

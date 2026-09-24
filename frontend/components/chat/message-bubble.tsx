@@ -14,6 +14,7 @@ import { cn } from "@/lib/cn"
 import type { BrokerMessage } from "@/lib/api/broker"
 
 export type MessageActions = {
+  accessToken: string | null
   connectingMatchId: string | null
   connectedMatchIds: Set<string>
   onConnect: (matchId: string) => void
@@ -87,15 +88,23 @@ export function MessageBubble({
           />
         ) : null}
         {shareCard && !isUser ? (
-          <AttachmentShareCard payload={shareCard} attachments={attachments} />
+          <AttachmentShareCard
+            payload={shareCard}
+            attachments={attachments}
+            accessToken={actions.accessToken}
+          />
         ) : null}
         {!hidePlainText && message.content ? (
           <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
             {message.content}
           </div>
         ) : null}
-        {attachments.length && !shareCard ? (
-          <AttachmentStack attachments={attachments} inverted={isUser} />
+        {attachments.length > 0 && !shareCard ? (
+          <AttachmentStack
+            attachments={attachments}
+            inverted={isUser}
+            accessToken={actions.accessToken}
+          />
         ) : null}
       </div>
     </div>

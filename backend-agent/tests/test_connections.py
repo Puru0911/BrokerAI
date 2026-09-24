@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
 from app.db.models import AgentConnection, AgentRequest, UserProfile
 from app.services.connections import peer_user_id
 from app.services.contact import _contact_card_message, parse_contact_card
@@ -70,6 +72,15 @@ def test_generate_vapid_keys_are_urlsafe() -> None:
     assert "/" not in keys["public_key"]
 
 
+def test_vapid_key_file_is_under_backend_agent() -> None:
+    from app.core.config import settings
+
+    path = settings.vapid_key_file
+    assert path.name == "vapid.json"
+    assert path.parent.name == "data"
+    assert path.parent.parent.name == "backend-agent"
+
+
 async def test_realtime_hub_fans_out_to_registered_sockets() -> None:
     hub = RealtimeHub()
 
@@ -95,9 +106,14 @@ async def test_realtime_hub_fans_out_to_registered_sockets() -> None:
     assert hub.is_online("user-a") is False
 
 
-def test_user_from_access_token_accepts_local_dev_token() -> None:
+@pytest.mark.asyncio
+async def test_user_from_access_token_accepts_local_dev_token(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     from app.api.dependencies import user_from_access_token
+    from app.core.config import settings
 
-    user = user_from_access_token("dev:ada@example.com")
+    monkeypatch.setattr(settings, "ENV", "local")
+    user = await user_from_access_token("dev:ada@example.com")
     assert user.email == "ada@example.com"
     assert user.id == "dev:ada@example.com"

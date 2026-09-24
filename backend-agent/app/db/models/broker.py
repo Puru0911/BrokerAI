@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import UTC, datetime
 from uuid import uuid4
 
 from sqlalchemy import (
@@ -18,6 +18,10 @@ from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column, relationship
 
 from app.db.base import Base
+
+
+def utc_now() -> datetime:
+    return datetime.now(UTC)
 
 
 class AgentSession(Base):
@@ -41,7 +45,7 @@ class AgentSession(Base):
     messages: Mapped[list[AgentMessage]] = relationship(
         back_populates="session",
         cascade="all, delete-orphan",
-        order_by="AgentMessage.created_at",
+        order_by="[AgentMessage.created_at, AgentMessage.id]",
     )
 
 
@@ -57,6 +61,7 @@ class AgentMessage(Base):
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=utc_now,
         server_default=func.now(),
     )
 
@@ -283,7 +288,7 @@ class AgentConnection(Base):
     messages: Mapped[list[AgentConnectionMessage]] = relationship(
         back_populates="connection",
         cascade="all, delete-orphan",
-        order_by="AgentConnectionMessage.created_at",
+        order_by="[AgentConnectionMessage.created_at, AgentConnectionMessage.id]",
     )
 
 
@@ -300,6 +305,7 @@ class AgentConnectionMessage(Base):
     content: Mapped[str] = mapped_column(Text, default="")
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True),
+        default=utc_now,
         server_default=func.now(),
     )
 

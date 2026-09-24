@@ -11,8 +11,11 @@ cd backend-agent
 cp .env.example .env
 # LLM keys can also be picked up from ../backend/.env
 uv sync
+uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --port 8000
 ```
+
+Set `SUPABASE_JWT_SECRET` from Supabase **Project Settings → API → JWT Secret** if you sign in with Google or magic link. `dev:` tokens only work when `ENV=local`. Production also needs `INTERNAL_JOB_SECRET` and `uv run alembic upgrade head` (the process will not start if the schema is behind).
 
 Point the frontend at this process with `NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000`.
 
@@ -24,6 +27,8 @@ Chat routes match the existing frontend:
 - `GET /broker/connections` — all 1:1 chats for the current user
 - `WS /broker/ws` — live messages (query `access_token`)
 - `POST /broker/push/subscribe` — Web Push
+- `POST /internal/process-stale` — expire timed-out matches (`X-Job-Secret`)
+- `GET /health` — liveness; `GET /health/ready` — Postgres + auth config
 
 Auth and user profiles are unchanged. Contact cards share name, email, and location only. After Connect, parties chat in-app over WebSockets (not Supabase Realtime).
 

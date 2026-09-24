@@ -12,10 +12,12 @@ from langchain_core.tools import BaseTool
 from app.agents.context import ToolContext, build_context_packet, load_session_history
 from app.agents.prompts import (
     BROKER_SYSTEM_PROMPT,
+    MATCH_CONTEXT_INSTRUCTION,
     MATCH_TIMEOUT_INSTRUCTION,
     NATURAL_FALLBACK_REPLY,
     REQUEST_READY_INSTRUCTION,
     UNAVAILABLE_REPLY,
+    USER_MESSAGE_INSTRUCTION,
 )
 from app.agents.tool_call_repair import repair_tool_message
 from app.agents.tools.registry import build_broker_tools
@@ -104,11 +106,9 @@ def _trigger_instruction(ctx: ToolContext) -> str:
         return REQUEST_READY_INSTRUCTION
     if ctx.trigger == "match_timeout":
         return MATCH_TIMEOUT_INSTRUCTION
-    return (
-        "Respond to the current user as their broker. The message they see must be "
-        "natural conversation only — questions, a short acknowledgement, or that you "
-        "will look and update them. Do not mention tools, steps, or methods."
-    )
+    if ctx.trigger == "match_context":
+        return MATCH_CONTEXT_INSTRUCTION
+    return USER_MESSAGE_INSTRUCTION
 
 
 _RETRYABLE_PROVIDER_ERROR_NAMES = frozenset(
@@ -128,8 +128,7 @@ _RETRYABLE_PROVIDER_MARKERS = (
 _PROVIDER_RETRY_NOTICE = (
     "The previous generation attempt failed because the model provider was "
     "temporarily unavailable. Continue from the current conversation and any "
-    "tool results already in this turn. Do not repeat a tool that already "
-    "succeeded. Take the next action now, or reply to the user if you are done."
+    "tool results already in this turn. Do not repeat a tool that already succeeded."
 )
 
 
@@ -255,7 +254,6 @@ async def run_tool_loop(
                 skip_reason = "unknown"
                 result = json.dumps({"ok": False, "error": f"Unknown tool '{name}'"})
             else:
-                seen_calls.add(signature)
                 try:
                     result = await tool.ainvoke(args or {})
                 except Exception as exc:  # noqa: BLE001
@@ -263,6 +261,8 @@ async def run_tool_loop(
                     result = json.dumps({"ok": False, "error": str(exc)})
             latency_ms = round((time.perf_counter() - started) * 1000)
             status = _tool_status(result)
+            if not skip_reason and status != "error":
+                seen_calls.add(signature)
             if skip_reason:
                 logger.info(
                     "tool skipped session=%s tool=%s reason=%s",
@@ -353,10 +353,10 @@ async def run_broker_turn(
     )
     if packet.get("new_uploads"):
         human += (
-            "\nThe user just uploaded file(s) or link(s). Classify each new_uploads "
-            "item now from conversation history, caption, and filename. Prefer public "
-            "or personal. Pending is a last resort.\n"
+            "\nnew_uploads lists files or links this user added this turn (metadata only).\n"
         )
+    if packet.get("outreach_context"):
+        human += f"\noutreach_context:\n{packet.get('outreach_context')}\n"
     if user_text:
         human += f"\nuser_message:\n{user_text}\n"
 

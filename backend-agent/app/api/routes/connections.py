@@ -12,7 +12,7 @@ from fastapi import (
     WebSocketDisconnect,
     status,
 )
-from fastapi.responses import RedirectResponse
+from fastapi.responses import Response
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.dependencies import CurrentUser, get_current_user, user_from_access_token
@@ -30,7 +30,7 @@ from app.schemas.broker import (
     PushUnsubscribe,
     VapidPublicKeyRead,
 )
-from app.services.attachments import AttachmentError
+from app.services.attachments import AttachmentError, sanitize_filename
 from app.services.connections import (
     ConnectionError,
     create_connection_file,
@@ -204,25 +204,32 @@ async def download_connection_attachment(
     attachment_id: str,
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> RedirectResponse:
+) -> Response:
     profile = await _require_profile(db, current_user)
     try:
         attachment = await get_connection_attachment_for_viewer(db, attachment_id, profile.id)
     except ConnectionError as exc:
-        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found") from exc
     if not attachment.storage_key:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     try:
-        content_url = await get_attachment_store().sign(
-            attachment.storage_key,
-            expires_in=settings.ATTACHMENT_SIGNED_URL_TTL_SECONDS,
-        )
-    except Exception as exc:
+        data, content_type = await get_attachment_store().fetch(attachment.storage_key)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+    except StorageNotConfiguredError as exc:
         raise HTTPException(
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="File storage is not available right now.",
+            detail=str(exc),
         ) from exc
-    return RedirectResponse(content_url)
+    filename = sanitize_filename(attachment.original_filename or "file")
+    return Response(
+        content=data,
+        media_type=content_type or attachment.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @router.get("/push/vapid-public-key", response_model=VapidPublicKeyRead)
@@ -284,7 +291,7 @@ async def broker_websocket(websocket: WebSocket) -> None:
         return
 
     try:
-        current_user = user_from_access_token(token)
+        current_user = await user_from_access_token(token)
     except HTTPException:
         await websocket.close(code=4401)
         return

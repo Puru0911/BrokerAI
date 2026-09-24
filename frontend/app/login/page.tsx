@@ -111,22 +111,24 @@ function LoginContent() {
         </div>
       ) : null}
 
-      <form action={devSignIn} className="mt-8 border-t border-line pt-5">
-        <input type="hidden" name="email" value={email} />
-        <input type="hidden" name="next" value={nextPath} />
-        <Button
-          type="submit"
-          disabled={!email}
-          variant="ghost"
-          className="h-11 w-full text-muted"
-        >
-          Temporary local sign in
-        </Button>
-        <p className="mt-2 text-center text-xs leading-5 text-muted">
-          Use only during local development if Supabase email rate limit is
-          exceeded.
-        </p>
-      </form>
+      {process.env.NODE_ENV !== "production" ? (
+        <form action={devSignIn} className="mt-8 border-t border-line pt-5">
+          <input type="hidden" name="email" value={email} />
+          <input type="hidden" name="next" value={nextPath} />
+          <Button
+            type="submit"
+            disabled={!email}
+            variant="ghost"
+            className="h-11 w-full text-muted"
+          >
+            Temporary local sign in
+          </Button>
+          <p className="mt-2 text-center text-xs leading-5 text-muted">
+            Use only during local development if Supabase email rate limit is
+            exceeded.
+          </p>
+        </form>
+      ) : null}
     </AuthShell>
   )
 }

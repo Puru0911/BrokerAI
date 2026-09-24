@@ -1,13 +1,13 @@
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.context import ToolContext
+from app.agents.context import OutreachJob, ToolContext
 from app.agents.runtime import run_broker_turn
 from app.db.models import (
     AgentAttachment,
@@ -38,6 +38,13 @@ class SessionCreationResult:
     session: AgentSession
     messages: list[AgentMessage]
     request: AgentRequest | None
+    outreach: list[OutreachJob] = field(default_factory=list)
+
+
+@dataclass
+class SessionTurnResult:
+    messages: list[AgentMessage]
+    outreach: list[OutreachJob] = field(default_factory=list)
 
 
 async def create_session_with_agent(
@@ -93,7 +100,12 @@ async def create_session_with_agent(
     replies = await _run_turn_safely(ctx)
     messages.extend(replies)
     request = await get_session_request(db, session.id)
-    return SessionCreationResult(session=session, messages=messages, request=request)
+    return SessionCreationResult(
+        session=session,
+        messages=messages,
+        request=request,
+        outreach=list(ctx.queued_outreach),
+    )
 
 
 async def handle_session_message(
@@ -102,7 +114,7 @@ async def handle_session_message(
     session: AgentSession,
     content: str,
     attachment_ids: list[str] | None = None,
-) -> list[AgentMessage]:
+) -> SessionTurnResult:
     request = await get_session_request(db, session.id)
     linked_ids = list(dict.fromkeys(attachment_ids or []))
     user_message = AgentMessage(session_id=session.id, role="user", content=content.strip())
@@ -152,10 +164,15 @@ async def handle_session_message(
         request.indexed_at is not None if request else False,
     )
     replies = await _run_turn_safely(ctx)
-    return [user_message, *replies]
+    return SessionTurnResult(
+        messages=[user_message, *replies],
+        outreach=list(ctx.queued_outreach),
+    )
 
 
-async def process_stale_matches(db: AsyncSession, limit: int = 50) -> list[AgentMatch]:
+async def process_stale_matches(
+    db: AsyncSession, limit: int = 50
+) -> tuple[list[AgentMatch], list[OutreachJob]]:
     result = await db.execute(
         select(AgentMatch)
         .where(
@@ -167,6 +184,7 @@ async def process_stale_matches(db: AsyncSession, limit: int = 50) -> list[Agent
         .limit(limit)
     )
     stale = list(result.scalars().all())
+    outreach: list[OutreachJob] = []
     for match in stale:
         match.status = "closed"
         match.close_reason = "expired"
@@ -195,9 +213,10 @@ async def process_stale_matches(db: AsyncSession, limit: int = 50) -> list[Agent
                 trigger_match_id=match.id,
             )
             await run_broker_turn(ctx)
+            outreach.extend(ctx.queued_outreach)
         except Exception as exc:
             logger.warning("stale-match broker turn failed match_id=%s", match.id, exc_info=exc)
-    return stale
+    return stale, outreach
 
 
 async def _run_turn_safely(ctx: ToolContext) -> list[AgentMessage]:

@@ -3,6 +3,7 @@
 import { Spinner } from "@/components/icons"
 import { cn } from "@/lib/cn"
 import type { BrokerAttachment } from "@/lib/api/broker"
+import { useAuthObjectUrl } from "@/lib/use-auth-object-url"
 
 export type StackAttachment = {
   id: string
@@ -60,10 +61,12 @@ export function isImageAttachment(attachment: {
 
 export function AttachmentStack({
   attachments,
-  inverted = false
+  inverted = false,
+  accessToken = null
 }: {
   attachments: StackAttachment[]
   inverted?: boolean
+  accessToken?: string | null
 }) {
   if (!attachments.length) return null
   const images = attachments.filter(isImageAttachment)
@@ -74,54 +77,101 @@ export function AttachmentStack({
       {images.length > 0 ? (
         <div
           className={cn(
-            "grid gap-2",
+            "grid gap-1.5",
             images.length === 1 ? "grid-cols-1" : "grid-cols-2"
           )}
         >
           {images.map((item) => (
-            <a
+            <AuthenticatedImage
               key={item.id}
-              href={item.content_url || "#"}
-              target="_blank"
-              rel="noreferrer"
-              className="overflow-hidden rounded-xl bg-black/5"
-            >
-              {item.content_url ? (
-                // eslint-disable-next-line @next/next/no-img-element
-                <img
-                  src={item.content_url}
-                  alt={item.label || item.original_filename || "Photo"}
-                  className="h-40 w-full object-cover"
-                />
-              ) : (
-                <div className="flex h-24 items-center justify-center text-xs text-muted">
-                  Photo
-                </div>
-              )}
-            </a>
+              attachment={item}
+              inverted={inverted}
+              accessToken={accessToken}
+              compact={images.length > 1}
+            />
           ))}
         </div>
       ) : null}
       {rest.map((item) => (
-        <AttachmentChip key={item.id} attachment={item} inverted={inverted} />
+        <AttachmentChip
+          key={item.id}
+          attachment={item}
+          inverted={inverted}
+          accessToken={accessToken}
+        />
       ))}
     </div>
   )
 }
 
+function AuthenticatedImage({
+  attachment,
+  inverted,
+  accessToken,
+  compact = false
+}: {
+  attachment: StackAttachment
+  inverted: boolean
+  accessToken?: string | null
+  compact?: boolean
+}) {
+  const src = useAuthObjectUrl(attachment.content_url, accessToken)
+  const name = attachment.label || attachment.original_filename || "Photo"
+
+  return (
+    <a
+      href={src || undefined}
+      target={src ? "_blank" : undefined}
+      rel="noreferrer"
+      className={cn(
+        "block overflow-hidden rounded-xl",
+        inverted ? "bg-white/15 ring-1 ring-white/20" : "bg-canvas"
+      )}
+    >
+      {src ? (
+        // eslint-disable-next-line @next/next/no-img-element
+        <img
+          src={src}
+          alt={name}
+          className={cn(
+            "w-full object-cover",
+            compact ? "aspect-[4/3] h-auto max-h-36" : "max-h-52 h-auto"
+          )}
+        />
+      ) : (
+        <div
+          className={cn(
+            "flex items-center justify-center text-xs text-muted",
+            compact ? "h-28" : "h-40"
+          )}
+        >
+          Loading photo…
+        </div>
+      )}
+    </a>
+  )
+}
+
 export function AttachmentChip({
   attachment,
-  inverted = false
+  inverted = false,
+  accessToken = null
 }: {
   attachment: StackAttachment
   inverted?: boolean
+  accessToken?: string | null
 }) {
-  const href =
-    attachment.kind === "url" ? attachment.url : attachment.content_url
+  const fileSrc = useAuthObjectUrl(
+    attachment.kind === "url" ? null : attachment.content_url,
+    accessToken,
+    attachment.kind !== "url"
+  )
+  const href = attachment.kind === "url" ? attachment.url : fileSrc
   const name =
     attachment.label ||
     attachment.original_filename ||
     (attachment.kind === "url" ? "Link" : "File")
+  const kindLabel = attachment.kind === "url" ? "Link" : fileKindLabel(attachment)
   const privateItem = attachment.share_class === "personal"
 
   return (
@@ -130,25 +180,37 @@ export function AttachmentChip({
       target={href ? "_blank" : undefined}
       rel="noreferrer"
       className={cn(
-        "flex min-w-0 items-center gap-2 rounded-xl px-3 py-2 text-sm",
+        "flex min-w-0 items-center gap-3 rounded-xl px-3 py-2.5 text-sm",
         inverted
-          ? "bg-white/10 text-white"
+          ? "bg-white text-ink shadow-sm"
           : "border border-line bg-canvas text-ink"
       )}
     >
-      <span className="min-w-0 truncate font-medium">{name}</span>
-      {privateItem ? (
-        <span
-          className={cn(
-            "ml-auto shrink-0 text-[10px] font-semibold uppercase tracking-wide",
-            inverted ? "text-white/70" : "text-muted"
-          )}
-        >
-          Private
+      <span
+        className="flex h-9 w-9 shrink-0 items-center justify-center rounded-lg bg-canvas text-xs font-semibold text-brand"
+        aria-hidden="true"
+      >
+        {attachment.kind === "url" ? "URL" : kindLabel.slice(0, 3).toUpperCase()}
+      </span>
+      <span className="min-w-0 flex-1">
+        <span className="block truncate font-medium">{name}</span>
+        <span className="block truncate text-xs text-muted">
+          {privateItem ? `Private · ${kindLabel}` : kindLabel}
         </span>
-      ) : null}
+      </span>
     </a>
   )
+}
+
+function fileKindLabel(attachment: StackAttachment): string {
+  const type = (attachment.content_type || "").toLowerCase()
+  const name = (attachment.original_filename || attachment.label || "").toLowerCase()
+  if (type.includes("pdf") || name.endsWith(".pdf")) return "PDF"
+  if (type.includes("word") || name.endsWith(".docx")) return "Document"
+  if (type.startsWith("image/") || /\.(jpg|jpeg|png|webp|heic|heif)$/.test(name)) {
+    return "Photo"
+  }
+  return "File"
 }
 
 export function AttachmentRequestCard({
@@ -242,20 +304,54 @@ export function AttachmentPermissionCard({
 
 export function AttachmentShareCard({
   payload,
-  attachments
+  attachments,
+  accessToken = null
 }: {
   payload: AttachmentSharePayload
   attachments: BrokerAttachment[]
+  accessToken?: string | null
 }) {
+  const visibleAttachments = attachments.length
+    ? attachments
+    : payload.attachments.map((item) => ({
+        id: item.id,
+        kind: item.kind,
+        label: item.label,
+        purpose: item.purpose,
+        content_type: item.content_type,
+        original_filename: item.original_filename,
+        url: item.url
+      }))
+  const imageCount = visibleAttachments.filter(isImageAttachment).length
+  const title = galleryHeading(
+    payload.title,
+    imageCount > 1 ? imageCount : visibleAttachments.length
+  )
+
   return (
-    <div className="w-full min-w-56 space-y-3">
-      <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
-        Shared with you
+    <div className="w-full min-w-0 space-y-2.5">
+      <div className="flex items-baseline justify-between gap-3">
+        <div className="text-[11px] font-semibold uppercase tracking-[0.14em] text-accent">
+          Shared with you
+        </div>
+        {visibleAttachments.length > 1 ? (
+          <div className="text-[11px] text-muted">
+            {visibleAttachments.length} items
+          </div>
+        ) : null}
       </div>
-      <div className="text-base font-semibold text-ink">{payload.title}</div>
-      <AttachmentStack attachments={attachments} />
+      {title ? (
+        <div className="text-[15px] font-semibold leading-5 text-ink">{title}</div>
+      ) : null}
+      <AttachmentStack attachments={visibleAttachments} accessToken={accessToken} />
     </div>
   )
+}
+
+function galleryHeading(title: string, count: number): string {
+  const stripped = title.replace(/\s+photo\s+\d+\s*$/i, "").trim()
+  if (count > 1 && stripped) return stripped
+  return stripped || title
 }
 
 export function parseAttachmentRequest(

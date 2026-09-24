@@ -2,6 +2,7 @@
 
 import type { RefObject } from "react"
 
+import { parseAttachmentShare } from "@/components/chat/attachment-cards"
 import { EmptyState } from "@/components/chat/empty-state"
 import { MessageBubble, type MessageActions } from "@/components/chat/message-bubble"
 import { ThinkingIndicator } from "@/components/chat/thinking-indicator"
@@ -42,8 +43,12 @@ export function MessageList({
           <EmptyState />
         ) : (
           <>
-            {messages.map((message) => (
-              <MessageBubble key={message.id} message={message} actions={actions} />
+            {clusterShareMessages(messages).map((group) => (
+              <MessageBubble
+                key={group[0].id}
+                message={mergeShareGroup(group)}
+                actions={actions}
+              />
             ))}
             <ThinkingIndicator active={thinking} />
           </>
@@ -52,4 +57,66 @@ export function MessageList({
       </div>
     </div>
   )
+}
+
+function isShareMessage(message: BrokerMessage): boolean {
+  return message.role === "assistant" && Boolean(parseAttachmentShare(message.content))
+}
+
+function clusterShareMessages(messages: BrokerMessage[]): BrokerMessage[][] {
+  const groups: BrokerMessage[][] = []
+  for (const message of messages) {
+    const previous = groups.at(-1)
+    if (previous && isShareMessage(previous[0]) && isShareMessage(message)) {
+      previous.push(message)
+    } else {
+      groups.push([message])
+    }
+  }
+  return groups
+}
+
+function galleryTitle(titles: string[]): string {
+  const stripped = titles
+    .map((title) => title.replace(/\s+photo\s+\d+\s*$/i, "").trim())
+    .filter(Boolean)
+  if (stripped.length > 0 && stripped.every((title) => title === stripped[0])) {
+    return stripped[0]
+  }
+  if (titles.length > 1) return "Photos"
+  return titles[0] || "Shared files"
+}
+
+function mergeShareGroup(group: BrokerMessage[]): BrokerMessage {
+  if (group.length === 1) return group[0]
+  const payloads = group
+    .map((message) => parseAttachmentShare(message.content))
+    .filter((payload) => payload !== null)
+  const attachments = group.flatMap((message) => message.attachments || [])
+  const seen = new Set<string>()
+  const unique = attachments.filter((item) => {
+    if (seen.has(item.id)) return false
+    seen.add(item.id)
+    return true
+  })
+  const mergedPayload = {
+    kind: "broker_attachment_share" as const,
+    version: 1 as const,
+    match_id: payloads[0]?.match_id || "",
+    title: galleryTitle(payloads.map((payload) => payload.title).filter(Boolean)),
+    attachments: unique.map((item) => ({
+      id: item.id,
+      kind: item.kind,
+      label: item.label,
+      purpose: item.purpose,
+      content_type: item.content_type,
+      original_filename: item.original_filename,
+      url: item.url
+    }))
+  }
+  return {
+    ...group[0],
+    content: JSON.stringify(mergedPayload),
+    attachments: unique
+  }
 }

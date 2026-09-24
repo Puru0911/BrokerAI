@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import logging
-from pathlib import Path
 from typing import Any
 
 from sqlalchemy import select
@@ -58,21 +57,23 @@ def generate_vapid_keys() -> dict[str, str]:
 
 
 def load_vapid_keys() -> tuple[str, str] | None:
-    if settings.VAPID_PUBLIC_KEY and settings.VAPID_PRIVATE_KEY:
-        return settings.VAPID_PUBLIC_KEY.strip(), settings.VAPID_PRIVATE_KEY.strip()
+    public_from_env = (settings.VAPID_PUBLIC_KEY or "").strip()
+    private_from_env = (settings.VAPID_PRIVATE_KEY or "").strip()
+    if public_from_env and private_from_env:
+        return public_from_env, private_from_env
 
-    path = Path(settings.VAPID_KEY_PATH)
+    path = settings.vapid_key_file
     if path.exists():
         try:
             payload = json.loads(path.read_text(encoding="utf-8"))
             public_key = payload.get("public_key")
             private_key = payload.get("private_key")
-            if isinstance(public_key, str) and isinstance(private_key, str):
+            if isinstance(public_key, str) and isinstance(private_key, str) and public_key and private_key:
                 return public_key, private_key
         except (OSError, json.JSONDecodeError) as exc:
             logger.warning("Could not read VAPID keys from %s: %s", path, exc)
 
-    if settings.ENV.lower() not in _LOCAL_ENVS:
+    if not settings.is_local and settings.ENV.lower() not in _LOCAL_ENVS:
         return None
 
     try:

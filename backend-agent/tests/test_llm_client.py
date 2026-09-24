@@ -131,6 +131,7 @@ def test_build_chat_model_openrouter_uses_chat_openrouter_with_reasoning(
     assert kwargs["timeout"] == 60_000
     assert kwargs["top_p"] == 0.95
     assert kwargs["app_title"] == "BrokerAI"
+    assert kwargs["app_url"] == settings.public_app_url
     assert "reasoning_format" not in kwargs
 
 

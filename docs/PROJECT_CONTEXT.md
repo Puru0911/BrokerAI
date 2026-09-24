@@ -1,6 +1,6 @@
 # BrokerAI — Project Context
 
-Last updated: 2026-09-08
+Last updated: 2026-09-14
 
 ## MVP Goal
 
@@ -39,7 +39,7 @@ user message
   → reply to the current user (and optionally a named party via message_party)
 ```
 
-One agent talks to every party. Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(to=source|candidate)` writes only into the other party's chat; this session's bubble is the final reply. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
+One agent talks to every party. Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(to=source|candidate, context=intent)` queues a **separate** broker turn on the other party's session (`trigger=match_context`) after this request commits. It returns an ack only and does not wait for their reply. This session's bubble is the final reply. The other human's answer is a later `user_message` on their session. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
 
 `backend/` is the earlier graph prototype. It is not the active architecture.
 
@@ -51,9 +51,10 @@ FastAPI app with the same chat contract the Next.js client already uses.
 
 - `app/main.py` — app factory
 - `app/api/routes/broker.py` — sessions, messages, attachments, matches, connect
+- `app/api/routes/internal.py` — `POST /internal/process-stale` (job secret, not a user route)
 - `app/api/routes/users.py` — `GET/POST /users/me`
 - `app/agents/runtime.py` — tool-calling loop
-- `app/agents/prompts.py` — broker persona and tool contracts
+- `app/agents/prompts.py` — broker persona as a capability map; tool effects live on bound schemas
 - `app/agents/tools/` — request, search, match, and contact tools
 - `app/rag/` — Chroma index + semantic profile/query helpers
 - `app/services/orchestrator.py` — session create, message handle, stale matches
@@ -78,7 +79,11 @@ New tables so this service can share Postgres with the old folder without collid
 
 Files live in a private Supabase Storage bucket (`broker-attachments`), path `{user_id}/{session_id}/{attachment_id}/filename`. The backend uses the service role and issues short-lived signed URLs after authz. Downloads always require a Bearer token; “public” means shareable with a match, not world-readable.
 
-New items start `pending`. The agent classifies from conversation history, caption, and filename on the upload turn (`classify_attachment`). `public` (resume, listing photos, portfolio) can be shared into an open match. `personal` needs a grant (Allow in UI or `record_share_grant` after the user agrees). Pending is a last resort if the agent cannot tell.
+New items start `pending`. The agent classifies from conversation history, caption, and filename on the upload turn (`classify_attachment`). Classification labels the file; it does not rewrite the living brief and does not deliver the file into a match. `public` (resume, listing photos, portfolio) can be shared into an open match. `personal` needs a grant (Allow in UI or `record_share_grant` after the user agrees). Pending is a last resort if the agent cannot tell.
+
+An open match snapshot includes `other_files`: public items the counterpart already holds (id, kind, purpose, label, whether already delivered) plus personal items as purpose-only. Bytes, URLs, and personal filenames stay off that list. `shared_with_you` is what has already been copied into this chat.
+
+Classify only labels a file. It does not send it into a match. When this person asks for a file: if the other side already has a public one, `share_attachment` delivers it here; if they do not, `message_party` asks them. When they later share from their chat, that existing share path delivers it to this side. Personal files still need the owner’s agreement. `share_attachment` delivers to the non-owner.
 
 `user_profiles` is shared with the original backend.
 
@@ -94,22 +99,24 @@ Statuses are intentionally short:
 
 ### Agent tools
 
-- `think` — private plan for the turn (custom, every model)
+Bound schemas describe what each tool does. The broker chooses among them.
+
+- `think` — private working note for this turn
 - `save_request` — full create/rewrite of the brief
-- `update_request` — patch only changed fields; index only when no further questions for this user
-- `index_request` — make the brief searchable; not while waiting on this user
-- `search_counterparties` — anonymized RAG candidates
-- `evaluate_pair` — pre-outreach gate on one retrieved pair; `open_match` only when roles are complementary, `skip` on same-side/hard-stop, screening questions come after open
+- `update_request` — patch only changed fields
+- `index_request` — make the brief searchable
+- `search_counterparties` / `search_again` — anonymized RAG candidates
+- `evaluate_pair` — screens one retrieved pair; recommendation is information for the broker
 - `open_match` — start working a pair (usually one open match at a time); seeds the match notebook
-- `message_party` — write into `source` or `candidate` chat; sets outstanding when a reply is expected
-- `update_notebook` — shared terms plus agent_note/next_action for later turns (not a human message)
-- `close_match` — skip / reject / withdraw
+- `message_party` — queue a later broker turn in `source` or `candidate` chat
+- `update_notebook` — shared terms plus agent_note/next_action for later turns
+- `skip_match` / `reject_match` — close a pair
 - `accept_match` — this user agreed; cards share when both have
-- `share_contacts` — only after accept
-- `get_match_events` — extra audit history plus notebook
-- `request_attachment` — upload prompt in this chat
-- `classify_attachment` — public vs personal from conversation, not file bytes
-- `share_attachment` — deliver to the other party, or ask permission if personal
+- `share_contacts` — match card after both sides accept
+- `get_match_events` / `get_request_snapshot` — fuller history or the living brief
+- `request_attachment` — upload control in this chat for a file or link
+- `classify_attachment` — public vs personal from conversation, caption, filename
+- `share_attachment` — deliver to the other party; personal items ask permission
 - `record_share_grant` — chat consent for a personal share
 
 Python still enforces: no matching yourself, no contacts before accept, identity redaction in cross-party text before accept, max one open match, skip-reopen only after a brief changes.
@@ -120,7 +127,9 @@ OpenRouter (primary) uses LangChain `ChatOpenRouter` with a config-driven `reaso
 
 If no API key is configured, the agent holds the request and says the model is unavailable.
 
-When `ENV` is `local`, `dev`, or `development`, the agent loads compact prompt copies (`BROKER_SYSTEM_PROMPT_DEV` and matching tool/index/search/evaluator strings) so the same tools and rules fit a smaller token budget. Other environments keep the full prompts.
+The system prompt is the broker's operating brief: who is in this chat, what the packet contains, when each tool applies, how to decide, and how to speak. Bound schemas still carry arguments. User-facing replies are a question, an acknowledgement, or a short update — not a recap of the brief, of tool findings, or of the work of the turn. Empty search is one short line.
+
+The broker system prompt is the same in every environment. When `ENV` is `local`, `dev`, or `development`, `use_dev_prompts()` still selects compact tool, index, search, evaluator, and trigger strings. Other environments bind the production copies of those.
 
 Agent debug logs go to `backend-agent/logs/brokerai.log` (and the console). There is no decision-log table.
 
@@ -161,11 +170,29 @@ cd frontend
 npm run dev
 ```
 
-Local auth: frontend temporary sign-in; backend accepts `dev:<email>` when `ENV=local`.
+Local auth: frontend temporary sign-in (hidden when `NODE_ENV=production`); backend accepts `dev:<email>` only when `ENV=local`. Real Supabase access tokens are signature-checked: ES256/RS256 via JWKS (`{SUPABASE_URL}/auth/v1/.well-known/jwks.json`), legacy HS256 via `SUPABASE_JWT_SECRET`. JWKS is fetched with httpx and cached; the event loop is not blocked. `/docs` and `/db/*` are gone in production. Stale matches run via `POST /internal/process-stale` with `X-Job-Secret`.
+
+Local still uses `create_all` on startup. Other environments refuse to boot unless Alembic is at head (`uv run alembic upgrade head`).
+
+## Production configuration (Supabase)
+
+In the production (and local-if-using-real-auth) project:
+
+1. **Project Settings → API**
+   - Copy **Project URL** → `SUPABASE_URL`
+   - Copy **JWT Secret** (legacy secret, not the anon or service_role key) → `SUPABASE_JWT_SECRET`
+   - Copy **service_role** → `SUPABASE_SERVICE_ROLE_KEY` (backend only)
+   - Issuer defaults to `{SUPABASE_URL}/auth/v1`; set `SUPABASE_JWT_ISSUER` only if it differs
+   - Audience stays `authenticated`
+2. **Authentication → URL configuration**
+   - Site URL: `https://app.example.com` (local: `http://localhost:3000`)
+   - Redirect URLs: `https://app.example.com/auth/callback` (and `http://localhost:3000/auth/callback` for local)
+3. **Authentication → Providers:** enable Google and Email (magic link). Google authorized redirect is `https://<project-ref>.supabase.co/auth/v1/callback`
+4. **Storage:** private bucket `broker-attachments`, 10 MB limit, deny-all RLS for `anon`/`authenticated` (API uses the service role)
+5. **Database:** app `DATABASE_URL` uses the **transaction pooler** (`:6543`). Run `uv run alembic upgrade head` against the **direct** URI (`:5432`)
 
 ## Next
 
 - Frontend visibility for open matches
-- Postgres migrations instead of `create_all`
 - Multi-worker WebSocket fan-out (Redis) if we run more than one uvicorn worker
 - Multi-party deals beyond 1:1 pairs

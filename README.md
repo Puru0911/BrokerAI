@@ -82,8 +82,15 @@ Important backend environment variables:
 - `CHROMA_REQUEST_COLLECTION`
 - `AGENT_MAX_TOOL_STEPS`
 - `SUPABASE_URL`
+- `SUPABASE_JWT_SECRET` (Project Settings → API → JWT Secret; required to verify access tokens)
+- `SUPABASE_JWT_ISSUER` (optional; defaults to `{SUPABASE_URL}/auth/v1`)
+- `SUPABASE_JWT_AUDIENCE` (default `authenticated`)
 - `SUPABASE_SERVICE_ROLE_KEY` (private Storage bucket for session files)
 - `SUPABASE_STORAGE_BUCKET` (default `broker-attachments`)
+- `INTERNAL_JOB_SECRET` (for `POST /internal/process-stale`)
+- `PUBLIC_APP_URL` / `CORS_ORIGINS` (production frontend origin)
+
+Schema: local still creates tables on boot. Production requires `cd backend-agent && uv run alembic upgrade head` before start.
 
 ## Frontend Setup
 

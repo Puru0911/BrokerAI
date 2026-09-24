@@ -98,7 +98,7 @@ async def get_connection_detail(
     result = await db.execute(
         select(AgentConnectionMessage)
         .where(AgentConnectionMessage.connection_id == connection.id)
-        .order_by(AgentConnectionMessage.created_at)
+        .order_by(AgentConnectionMessage.created_at, AgentConnectionMessage.id)
     )
     messages = list(result.scalars().all())
     serialized = [await to_message_read(db, message, viewer_id) for message in messages]
@@ -248,17 +248,7 @@ async def mark_connection_read(
 async def to_attachment_read(attachment: AgentConnectionAttachment) -> ConnectionAttachmentRead:
     content_url = None
     if attachment.storage_key:
-        try:
-            content_url = await get_attachment_store().sign(
-                attachment.storage_key,
-                expires_in=settings.ATTACHMENT_SIGNED_URL_TTL_SECONDS,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "signed url failed connection_attachment=%s error=%s",
-                attachment.id,
-                exc,
-            )
+        content_url = f"/broker/connections/attachments/{attachment.id}/content"
     return ConnectionAttachmentRead(
         id=attachment.id,
         connection_id=attachment.connection_id,
@@ -331,7 +321,10 @@ async def to_connection_summary(
         last_result = await db.execute(
             select(AgentConnectionMessage)
             .where(AgentConnectionMessage.connection_id == connection.id)
-            .order_by(AgentConnectionMessage.created_at.desc())
+            .order_by(
+                AgentConnectionMessage.created_at.desc(),
+                AgentConnectionMessage.id.desc(),
+            )
             .limit(1)
         )
         last_row = last_result.scalar_one_or_none()

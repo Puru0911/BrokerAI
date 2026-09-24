@@ -15,6 +15,8 @@ class StorageNotConfiguredError(RuntimeError):
 class AttachmentStore(Protocol):
     async def put(self, key: str, data: bytes, content_type: str) -> None: ...
 
+    async def fetch(self, key: str) -> tuple[bytes, str]: ...
+
     async def sign(self, key: str, expires_in: int = 3600) -> str: ...
 
     async def delete(self, key: str) -> None: ...
@@ -28,6 +30,12 @@ class MemoryAttachmentStore:
 
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         self.objects[key] = (data, content_type)
+
+    async def fetch(self, key: str) -> tuple[bytes, str]:
+        if key not in self.objects:
+            raise FileNotFoundError(key)
+        data, content_type = self.objects[key]
+        return data, content_type
 
     async def sign(self, key: str, expires_in: int = 3600) -> str:
         if key not in self.objects:
@@ -75,12 +83,16 @@ class SupabaseAttachmentStore:
                 )
         self._bucket_ready = True
 
+    def _object_url(self, key: str, *, authenticated: bool = False) -> str:
+        encoded = quote(key, safe="/")
+        kind = "object/authenticated" if authenticated else "object"
+        return f"{self.base_url}/storage/v1/{kind}/{self.bucket}/{encoded}"
+
     async def put(self, key: str, data: bytes, content_type: str) -> None:
         async with httpx.AsyncClient(timeout=60.0) as client:
             await self._ensure_bucket(client)
-            encoded = quote(key, safe="/")
             response = await client.post(
-                f"{self.base_url}/storage/v1/object/{self.bucket}/{encoded}",
+                self._object_url(key),
                 headers={
                     **self._headers,
                     "Content-Type": content_type or "application/octet-stream",
@@ -92,6 +104,18 @@ class SupabaseAttachmentStore:
                 raise StorageNotConfiguredError(
                     f"Upload failed ({response.status_code}): {response.text}"
                 )
+
+    async def fetch(self, key: str) -> tuple[bytes, str]:
+        async with httpx.AsyncClient(timeout=60.0) as client:
+            for authenticated in (True, False):
+                response = await client.get(
+                    self._object_url(key, authenticated=authenticated),
+                    headers=self._headers,
+                )
+                if response.status_code == 200:
+                    content_type = response.headers.get("content-type") or "application/octet-stream"
+                    return response.content, content_type.split(";")[0].strip()
+            raise FileNotFoundError(key)
 
     async def sign(self, key: str, expires_in: int = 3600) -> str:
         async with httpx.AsyncClient(timeout=20.0) as client:
@@ -109,7 +133,12 @@ class SupabaseAttachmentStore:
                 raise FileNotFoundError(key)
             if signed.startswith("http"):
                 return signed
-            return f"{self.base_url}/storage/v1{signed}"
+            path = signed if signed.startswith("/") else f"/{signed}"
+            if path.startswith("/storage/v1/"):
+                return f"{self.base_url}{path}"
+            if path.startswith("/object/"):
+                return f"{self.base_url}/storage/v1{path}"
+            return f"{self.base_url}/storage/v1{path}"
 
     async def delete(self, key: str) -> None:
         async with httpx.AsyncClient(timeout=20.0) as client:

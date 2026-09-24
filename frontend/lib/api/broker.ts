@@ -10,6 +10,7 @@ export type BrokerSession = {
 export type BrokerAttachment = {
   id: string
   session_id: string
+  message_id?: string | null
   kind: "file" | "url"
   share_class: "pending" | "public" | "personal"
   label: string | null

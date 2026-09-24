@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from langchain_core.tools import BaseTool
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from app.agents.context import ToolContext
 from app.agents.prompts import TOOL_SHARE_CONTACTS
@@ -12,7 +12,7 @@ from app.services.workflow import MATCH_ACCEPTED, MATCH_CONNECTED
 
 
 class ShareContactsArgs(BaseModel):
-    match_id: str
+    match_id: str = Field(description="The accepted match whose contact cards should be delivered.")
 
 
 def build_contact_tools(ctx: ToolContext) -> list[BaseTool]:
@@ -23,7 +23,12 @@ def build_contact_tools(ctx: ToolContext) -> list[BaseTool]:
         messages = await share_match_contacts(ctx.db, match)
         for message in messages:
             ctx.track(message)
-        return json_result(ok=True, match_id=match.id, contact_cards=len(messages))
+        return json_result(
+            ok=True,
+            match_id=match.id,
+            contact_cards=len(messages),
+            outcome=f"Contact cards delivered: {len(messages)}.",
+        )
 
     return [
         make_tool(

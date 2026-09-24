@@ -12,12 +12,14 @@ export function ConnectionThread({
   loading,
   error,
   peerName,
+  accessToken,
   endRef
 }: {
   messages: ConnectionMessage[]
   loading: boolean
   error: string | null
   peerName: string
+  accessToken: string | null
   endRef: RefObject<HTMLDivElement | null>
 }) {
   return (
@@ -39,7 +41,11 @@ export function ConnectionThread({
           </div>
         ) : (
           messages.map((message) => (
-            <ConnectionBubble key={message.id} message={message} />
+            <ConnectionBubble
+              key={message.id}
+              message={message}
+              accessToken={accessToken}
+            />
           ))
         )}
         <div ref={endRef} />
@@ -48,7 +54,13 @@ export function ConnectionThread({
   )
 }
 
-function ConnectionBubble({ message }: { message: ConnectionMessage }) {
+function ConnectionBubble({
+  message,
+  accessToken
+}: {
+  message: ConnectionMessage
+  accessToken: string | null
+}) {
   if (message.kind === "system") {
     return (
       <div className="px-6 py-1 text-center text-xs leading-5 text-muted">
@@ -74,8 +86,12 @@ function ConnectionBubble({ message }: { message: ConnectionMessage }) {
             {message.content}
           </div>
         ) : null}
-        {attachments.length ? (
-          <AttachmentStack attachments={attachments} inverted={message.mine} />
+        {attachments.length > 0 ? (
+          <AttachmentStack
+            attachments={attachments}
+            inverted={message.mine}
+            accessToken={accessToken}
+          />
         ) : null}
       </div>
     </div>

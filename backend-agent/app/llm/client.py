@@ -52,7 +52,7 @@ def resolve_llm_runtime_config() -> LLMRuntimeConfig:
             base_url=settings.OPENROUTER_BASE_URL.rstrip("/"),
             api_key=settings.OPENROUTER_API_KEY,
             default_headers={
-                "HTTP-Referer": "http://localhost:3000",
+                "HTTP-Referer": settings.public_app_url,
                 "X-Title": settings.APP_NAME,
             },
         )
@@ -154,7 +154,7 @@ def build_broker_chat_model() -> BaseChatModel:
             max_tokens=settings.GROQ_MAX_COMPLETION_TOKENS,
         )
     if provider == "openrouter" and openrouter_reasoning_config() is not None:
-        return build_chat_model(temperature=1.0, max_tokens=4096)
+        return build_chat_model(temperature=1.0, max_tokens=2048)
     return build_chat_model(temperature=0.35, max_tokens=4096)
 
 
@@ -205,7 +205,7 @@ def _build_openrouter_chat_model(
         # ChatOpenRouter.timeout is milliseconds (SDK timeout_ms).
         "timeout": int(settings.LLM_REQUEST_TIMEOUT_SECONDS * 1000),
         "max_retries": 2,
-        "app_url": "http://localhost:3000",
+        "app_url": settings.public_app_url,
         "app_title": settings.APP_NAME,
     }
     if reasoning is not None:

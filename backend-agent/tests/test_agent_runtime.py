@@ -33,6 +33,87 @@ class FakeLLM:
         return self.responses.pop(0)
 
 
+async def test_tool_loop_retries_failed_call_then_skips_success() -> None:
+    attempts: list[str] = []
+
+    async def flaky(text: str) -> str:
+        attempts.append(text)
+        if len(attempts) == 1:
+            return json.dumps({"ok": False, "error": "provider unavailable"})
+        return json.dumps({"ok": True, "echo": text})
+
+    tool = StructuredTool.from_function(
+        name="echo",
+        description="Echo text.",
+        coroutine=flaky,
+        args_schema=EchoArgs,
+    )
+    same_call = {"name": "echo", "args": {"text": "saved"}, "id": "call-1"}
+    llm = FakeLLM(
+        [
+            AIMessage(content="", tool_calls=[{**same_call, "id": "call-1"}]),
+            AIMessage(content="", tool_calls=[{**same_call, "id": "call-2"}]),
+            AIMessage(content="", tool_calls=[{**same_call, "id": "call-3"}]),
+            AIMessage(content="Brief saved."),
+        ]
+    )
+    messages, final_text = await run_tool_loop(
+        llm,
+        [tool],
+        [SystemMessage(content="broker"), HumanMessage(content="I need a flat")],
+        max_steps=6,
+    )
+    assert attempts == ["saved", "saved"]
+    assert final_text == "Brief saved."
+    tool_payloads = [
+        json.loads(message.content)
+        for message in messages
+        if getattr(message, "type", None) == "tool"
+    ]
+    assert tool_payloads[0] == {"ok": False, "error": "provider unavailable"}
+    assert tool_payloads[1] == {"ok": True, "echo": "saved"}
+    assert tool_payloads[2] == {"ok": False, "error": "Duplicate tool call skipped."}
+
+
+async def test_tool_loop_retries_crashed_call() -> None:
+    attempts = 0
+
+    async def crash_once(text: str) -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise RuntimeError("upstream timeout")
+        return json.dumps({"ok": True, "echo": text})
+
+    tool = StructuredTool.from_function(
+        name="echo",
+        description="Echo text.",
+        coroutine=crash_once,
+        args_schema=EchoArgs,
+    )
+    llm = FakeLLM(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "echo", "args": {"text": "saved"}, "id": "call-1"}],
+            ),
+            AIMessage(
+                content="",
+                tool_calls=[{"name": "echo", "args": {"text": "saved"}, "id": "call-2"}],
+            ),
+            AIMessage(content="Recovered."),
+        ]
+    )
+    _, final_text = await run_tool_loop(
+        llm,
+        [tool],
+        [SystemMessage(content="broker"), HumanMessage(content="retry")],
+        max_steps=4,
+    )
+    assert attempts == 2
+    assert final_text == "Recovered."
+
+
 async def test_tool_loop_calls_tool_then_replies() -> None:
     seen: list[str] = []
 

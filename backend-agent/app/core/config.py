@@ -14,14 +14,19 @@ class Settings(BaseSettings):
 
     APP_NAME: str = "BrokerAI"
     ENV: str = "local"
+    PUBLIC_APP_URL: str | None = None
     CORS_ORIGINS: list[str] = [
         "http://localhost:3000",
         "http://localhost:3001",
         "http://127.0.0.1:3000",
         "http://127.0.0.1:3001",
     ]
+    INTERNAL_JOB_SECRET: str | None = None
 
     DATABASE_URL: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/brokerai"
+    # Supabase pooler (port 6543) often presents a chain Homebrew Python rejects.
+    # Default encrypts without CA verify. Set true to require a trusted cert.
+    DATABASE_SSL_VERIFY: bool = False
 
     LLM_PROVIDER: str = "openrouter"
     LLM_REQUEST_TIMEOUT_SECONDS: float = 60.0
@@ -43,7 +48,7 @@ class Settings(BaseSettings):
     CHROMA_PERSIST_DIR: str = "./data/chroma"
     CHROMA_REQUEST_COLLECTION: str = "agent_requests"
 
-    AGENT_MAX_TOOL_STEPS: int = 8
+    AGENT_MAX_TOOL_STEPS: int = 16
     AGENT_MODEL_INVOKE_RETRIES: int = 3
     MATCH_TIMEOUT_HOURS: int = 48
     MAX_OPEN_MATCHES_PER_REQUEST: int = 1
@@ -52,6 +57,7 @@ class Settings(BaseSettings):
     LOG_FILE: str = "logs/brokerai.log"
 
     SUPABASE_URL: str | None = None
+    SUPABASE_JWT_SECRET: str | None = None
     SUPABASE_JWT_AUDIENCE: str = "authenticated"
     SUPABASE_JWT_ISSUER: str | None = None
     SUPABASE_SERVICE_ROLE_KEY: str | None = None
@@ -65,6 +71,37 @@ class Settings(BaseSettings):
     VAPID_PRIVATE_KEY: str | None = None
     VAPID_SUBJECT: str = "mailto:broker@localhost"
     VAPID_KEY_PATH: str = "./data/vapid.json"
+
+    @property
+    def vapid_key_file(self) -> Path:
+        raw = Path(self.VAPID_KEY_PATH)
+        if raw.is_absolute():
+            return raw
+        return Path(__file__).resolve().parents[2] / raw
+
+    @property
+    def is_local(self) -> bool:
+        return (self.ENV or "").strip().lower() in {"local", "dev", "development"}
+
+    @property
+    def is_production(self) -> bool:
+        return (self.ENV or "").strip().lower() in {"production", "prod"}
+
+    @property
+    def public_app_url(self) -> str:
+        if self.PUBLIC_APP_URL and self.PUBLIC_APP_URL.strip():
+            return self.PUBLIC_APP_URL.strip().rstrip("/")
+        if self.CORS_ORIGINS:
+            return self.CORS_ORIGINS[0].rstrip("/")
+        return "http://localhost:3000"
+
+    @property
+    def jwt_issuer(self) -> str | None:
+        if self.SUPABASE_JWT_ISSUER and self.SUPABASE_JWT_ISSUER.strip():
+            return self.SUPABASE_JWT_ISSUER.strip().rstrip("/")
+        if self.SUPABASE_URL and self.SUPABASE_URL.strip():
+            return self.SUPABASE_URL.strip().rstrip("/") + "/auth/v1"
+        return None
 
 
 settings = Settings()

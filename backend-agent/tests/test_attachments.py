@@ -11,8 +11,11 @@ from app.services.attachments import (
     ATTACHMENT_SHARE_KIND,
     AttachmentError,
     can_share_directly,
+    counterpart_file_inventory,
     extract_urls,
+    gallery_title,
     normalize_content_type,
+    owner_and_recipient_requests,
     parse_structured_card,
     sanitize_filename,
     upload_notice,
@@ -43,6 +46,71 @@ def test_can_share_directly_only_public() -> None:
     assert can_share_directly("public") is True
     assert can_share_directly("personal") is False
     assert can_share_directly("pending") is False
+
+
+def test_counterpart_file_inventory_lists_public_and_counts_the_rest() -> None:
+    inventory = counterpart_file_inventory(
+        [
+            {
+                "id": "pub-1",
+                "kind": "file",
+                "share_class": "public",
+                "purpose": "listing_photos",
+                "label": "Desk photo",
+                "filename": "IMG_0042.JPG",
+                "content_type": "image/jpeg",
+                "url": "https://secret.example/file",
+            },
+            {
+                "id": "pub-2",
+                "kind": "file",
+                "share_class": "public",
+                "purpose": "listing_photos",
+                "label": "Drawer",
+                "content_type": "image/jpeg",
+            },
+            {
+                "id": "per-1",
+                "kind": "file",
+                "share_class": "personal",
+                "purpose": "id_document",
+                "label": "Passport",
+                "filename": "passport.jpg",
+            },
+            {
+                "id": "pend-1",
+                "kind": "file",
+                "share_class": "pending",
+                "label": "unknown",
+            },
+        ],
+        shared_ids={"pub-2"},
+    )
+    assert inventory["personal_count"] == 1
+    assert inventory["personal"] == [{"purpose": "id_document"}]
+    assert inventory["pending_count"] == 1
+    assert [item["id"] for item in inventory["public"]] == ["pub-1", "pub-2"]
+    assert inventory["public"][0]["shared"] is False
+    assert inventory["public"][1]["shared"] is True
+    assert inventory["public"][0]["purpose"] == "listing_photos"
+    assert inventory["public"][0]["label"] == "Desk photo"
+    assert "filename" not in inventory["public"][0]
+    assert "url" not in inventory["public"][0]
+    assert "Passport" not in str(inventory)
+    assert "passport.jpg" not in str(inventory)
+
+
+def test_owner_and_recipient_is_the_file_holder_not_the_caller() -> None:
+    source = type("R", (), {"id": "s", "session_id": "sess-s", "user_id": "u-s"})()
+    candidate = type("R", (), {"id": "c", "session_id": "sess-c", "user_id": "u-c"})()
+    seller_file = type("A", (), {"session_id": "sess-c", "user_id": "u-c"})()
+    owner, recipient = owner_and_recipient_requests(source, candidate, seller_file)
+    assert owner.id == "c"
+    assert recipient.id == "s"
+    buyer_file = type("A", (), {"session_id": "sess-s", "user_id": "u-s"})()
+    owner, recipient = owner_and_recipient_requests(source, candidate, buyer_file)
+    assert owner.id == "s"
+    assert recipient.id == "c"
 
 
 def test_extract_urls_dedupes_and_strips_punctuation() -> None:
@@ -90,11 +158,31 @@ def test_parse_structured_cards() -> None:
     assert parse_structured_card(json.dumps({"kind": "broker_contact_card", "version": 1})) is None
 
 
+def test_gallery_title_collapses_numbered_photos() -> None:
+    photos = [
+        AgentAttachment(
+            id=f"a{index}",
+            user_id="u1",
+            session_id="s1",
+            kind="file",
+            label=f"Royal Enfield GT650 photo {index}",
+            content_type="image/jpeg",
+            purpose="listing_photos",
+            status="ready",
+        )
+        for index in (1, 2, 3)
+    ]
+    assert gallery_title(photos) == "Royal Enfield GT650"
+
+
 async def test_memory_store_roundtrip() -> None:
     store = MemoryAttachmentStore()
     await store.put("u/s/a/file.pdf", b"%PDF", "application/pdf")
+    data, content_type = await store.fetch("u/s/a/file.pdf")
+    assert data == b"%PDF"
+    assert content_type == "application/pdf"
     url = await store.sign("u/s/a/file.pdf")
     assert url.startswith("memory://")
     await store.delete("u/s/a/file.pdf")
     with pytest.raises(FileNotFoundError):
-        await store.sign("u/s/a/file.pdf")
+        await store.fetch("u/s/a/file.pdf")

@@ -7,7 +7,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import AgentMatch, AgentMessage, AgentRequest, AgentSession, UserProfile
-from app.services.attachments import context_attachments, shared_attachment_ids_for_match
+from app.services.attachments import (
+    context_attachments,
+    counterpart_file_inventory,
+    shared_attachment_ids_for_match,
+)
 from app.services.living_request import living_request_from_model, redacted_living_request
 from app.services.workflow import (
     MATCH_ACCEPTED,
@@ -21,8 +25,19 @@ from app.services.workflow import (
     party_role,
 )
 
-Trigger = Literal["user_message", "request_ready", "match_timeout"]
+Trigger = Literal["user_message", "request_ready", "match_timeout", "match_context"]
 SessionRole = Literal["source", "counterparty"]
+PartyTo = Literal["source", "candidate"]
+
+
+@dataclass
+class OutreachJob:
+    """A broker turn to run later on the other party's session."""
+
+    match_id: str
+    to: PartyTo
+    context: str
+    from_session_id: str
 
 
 @dataclass
@@ -34,12 +49,14 @@ class ToolContext:
     user_message: AgentMessage | None
     trigger: Trigger
     trigger_match_id: str | None = None
+    outreach_context: str | None = None
     current_user_messages: list[AgentMessage] = field(default_factory=list)
     saved_this_turn: bool = False
     indexed_this_turn: bool = False
     searched_this_turn: bool = False
     opened_match_ids: list[str] = field(default_factory=list)
     new_attachment_ids: list[str] = field(default_factory=list)
+    queued_outreach: list[OutreachJob] = field(default_factory=list)
 
     def track(self, message: AgentMessage) -> None:
         if message.session_id == self.session.id:
@@ -98,6 +115,7 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
         "attention_pointer": attention,
         "current_user_message": user_text,
         "trigger_match_id": ctx.trigger_match_id,
+        "outreach_context": ctx.outreach_context,
         "attachments": attachments,
         "new_uploads": new_uploads,
     }
@@ -144,6 +162,7 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
         "other_brief": other_party,
         "other_party": other_party,
         "notebook": match_notebook(match),
+        "other_files": counterpart_file_inventory(other_attachments, shared_ids),
         "shared_by_you": shared_by_you,
         "shared_with_you": shared_with_you,
         "last_events": [_event_snapshot(event) for event in events],
@@ -160,7 +179,11 @@ async def load_session_history(
     result = await db.execute(
         select(AgentMessage)
         .where(AgentMessage.session_id == session_id)
-        .order_by(AgentMessage.created_at)
+        .order_by(
+            AgentMessage.created_at,
+            AgentMessage.role.desc(),
+            AgentMessage.id,
+        )
     )
     messages = [
         message

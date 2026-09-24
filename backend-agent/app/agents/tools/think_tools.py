@@ -15,19 +15,17 @@ logger = logging.getLogger(__name__)
 
 
 class ThinkArgs(BaseModel):
-    note: str = Field(min_length=1, max_length=1200)
+    note: str = Field(
+        min_length=1,
+        max_length=1200,
+        description="A private working note for this turn. Discarded afterward.",
+    )
 
 
 def build_think_tools(ctx: ToolContext) -> list[BaseTool]:
     async def think(args: ThinkArgs) -> str:
         logger.info("think session=%s note=%s", ctx.session.id, clip(args.note, 300))
-        return json_result(
-            ok=True,
-            hint=(
-                "Continue with tools using notebook.facts and this user_message. "
-                "Do not mention this note to the person."
-            ),
-        )
+        return json_result(ok=True, outcome="Private note recorded for this turn. Not persisted.")
 
     return [
         make_tool(name="think", description=TOOL_THINK, args_model=ThinkArgs, handler=think),
