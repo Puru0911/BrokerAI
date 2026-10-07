@@ -129,9 +129,9 @@ If no API key is configured, the agent holds the request and says the model is u
 
 The system prompt is the broker's operating brief: who is in this chat, what the packet contains, when each tool applies, how to decide, and how to speak. Bound schemas still carry arguments. User-facing replies are a question, an acknowledgement, or a short update — not a recap of the brief, of tool findings, or of the work of the turn. Empty search is one short line.
 
-The broker system prompt is the same in every environment. When `ENV` is `local`, `dev`, or `development`, `use_dev_prompts()` still selects compact tool, index, search, evaluator, and trigger strings. Other environments bind the production copies of those.
+Prompt size is `AGENT_PROMPT_SIZE` (`full` or `small` / `compressed` / `compact`), not `ENV`. `full` binds the production system prompt, tool descriptions, index/search/evaluator, and trigger strings. `small` binds the shorter copies. Restart the process after changing it.
 
-Agent debug logs go to `backend-agent/logs/brokerai.log` (and the console). There is no decision-log table.
+Agent debug logs go to `backend-agent/logs/brokerai-YYYY-MM-DD.log` (one file per day, and the console). Model reasoning is logged as `model thinking`. There is no decision-log table.
 
 ### RAG
 
@@ -148,6 +148,7 @@ Direct party chat is a separate inbox from broker sessions:
 - `POST /broker/connections/{id}/messages` and `/attachments` — text, photos, files
 - `WS /broker/ws?access_token=...` — live fan-out (`connection.created`, `connection.message`)
 - Web Push via VAPID (`GET /broker/push/vapid-public-key`, `POST /broker/push/subscribe`)
+- Activity email via Resend when the recipient has no live `/broker/ws` (match_context outreach, leftover intro offer, contact cards). `PATCH /users/me` and `GET /mail/unsubscribe`. 1:1 connection mail is out of scope; push still covers those threads. Presence is in-process (one uvicorn worker), same as the hub.
 
 **Realtime is FastAPI WebSockets, not Supabase Realtime.** Authz and file access already live in FastAPI (not Postgres RLS), and `DATABASE_URL` may be local Postgres or Neon. Supabase stays Auth + Storage. Push is sent from the same process that persists the message; the service worker suppresses the banner if a window is focused.
 
@@ -187,7 +188,7 @@ In the production (and local-if-using-real-auth) project:
 2. **Authentication → URL configuration**
    - Site URL: `https://app.example.com` (local: `http://localhost:3000`)
    - Redirect URLs: `https://app.example.com/auth/callback` (and `http://localhost:3000/auth/callback` for local)
-3. **Authentication → Providers:** enable Google and Email (magic link). Google authorized redirect is `https://<project-ref>.supabase.co/auth/v1/callback`
+3. **Authentication → Providers:** enable Google and Email (magic link). Google authorized redirect is `https://<project-ref>.supabase.co/auth/v1/callback`. Google sign-in auto-creates `user_profiles` from People API (`names`, `genders`, `birthdays`) using extra scopes `user.gender.read` and `user.birthday.read`. Enable the People API on the Google Cloud project and add those scopes on the OAuth consent screen. Magic-link users complete the same name / gender / date-of-birth form. `location` and `mobile_number` stay nullable on the table and are not collected.
 4. **Storage:** private bucket `broker-attachments`, 10 MB limit, deny-all RLS for `anon`/`authenticated` (API uses the service role)
 5. **Database:** app `DATABASE_URL` uses the **transaction pooler** (`:6543`). Run `uv run alembic upgrade head` against the **direct** URI (`:5432`)
 

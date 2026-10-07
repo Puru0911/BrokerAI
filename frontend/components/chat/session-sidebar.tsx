@@ -21,6 +21,9 @@ export function SessionSidebar({
   onSelectSession,
   onSelectConnection,
   onDeleteSession,
+  emailNotify,
+  emailNotifyBusy,
+  onToggleEmailNotify,
   logoutAction
 }: {
   open: boolean
@@ -35,6 +38,9 @@ export function SessionSidebar({
   onSelectSession: (sessionId: string) => void
   onSelectConnection: (connectionId: string) => void
   onDeleteSession: (sessionId: string) => void
+  emailNotify: boolean
+  emailNotifyBusy: boolean
+  onToggleEmailNotify: () => void
   logoutAction: (formData: FormData) => void | Promise<void>
 }) {
   return (
@@ -189,12 +195,36 @@ export function SessionSidebar({
         </section>
       </div>
 
-      <form action={logoutAction} className="border-t border-line p-3">
-        <Button type="submit" variant="ghost" className="h-10 w-full justify-start text-muted">
-          <IconLogout />
-          Sign out
-        </Button>
-      </form>
+      <div className="border-t border-line p-3">
+        <button
+          type="button"
+          onClick={onToggleEmailNotify}
+          disabled={emailNotifyBusy}
+          className="mb-1 flex h-10 w-full items-center justify-between gap-3 rounded-xl px-2 text-left text-sm text-ink transition hover:bg-canvas disabled:opacity-50"
+        >
+          <span>Email me when I'm away</span>
+          <span
+            aria-hidden
+            className={cn(
+              "relative h-5 w-9 shrink-0 rounded-full transition",
+              emailNotify ? "bg-accent" : "bg-line"
+            )}
+          >
+            <span
+              className={cn(
+                "absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow-sm transition",
+                emailNotify ? "left-4" : "left-0.5"
+              )}
+            />
+          </span>
+        </button>
+        <form action={logoutAction}>
+          <Button type="submit" variant="ghost" className="h-10 w-full justify-start text-muted">
+            <IconLogout />
+            Sign out
+          </Button>
+        </form>
+      </div>
     </aside>
   )
 }

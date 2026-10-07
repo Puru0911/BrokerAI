@@ -297,13 +297,11 @@ async def to_connection_summary(
         peer = ConnectionPeerRead(
             user_id=peer_id,
             name="Matched person",
-            location="",
         )
     else:
         peer = ConnectionPeerRead(
             user_id=peer_profile.id,
             name=peer_profile.name,
-            location=peer_profile.location,
         )
 
     match = await db.get(AgentMatch, connection.match_id)

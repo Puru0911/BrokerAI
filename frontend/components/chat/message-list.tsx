@@ -2,7 +2,12 @@
 
 import type { RefObject } from "react"
 
-import { parseAttachmentShare } from "@/components/chat/attachment-cards"
+import {
+  parseAttachmentPermission,
+  parseAttachmentRequest,
+  parseAttachmentShare
+} from "@/components/chat/attachment-cards"
+import { parseConnectOffer, parseContactCard } from "@/components/chat/contact-card"
 import { EmptyState } from "@/components/chat/empty-state"
 import { MessageBubble, type MessageActions } from "@/components/chat/message-bubble"
 import { ThinkingIndicator } from "@/components/chat/thinking-indicator"
@@ -43,7 +48,11 @@ export function MessageList({
           <EmptyState />
         ) : (
           <>
-            {clusterShareMessages(messages).map((group) => (
+            {clusterShareMessages(
+              placeCardsAfterAssistantText(
+                messages.filter((message) => !parseConnectOffer(message.content))
+              )
+            ).map((group) => (
               <MessageBubble
                 key={group[0].id}
                 message={mergeShareGroup(group)}
@@ -61,6 +70,39 @@ export function MessageList({
 
 function isShareMessage(message: BrokerMessage): boolean {
   return message.role === "assistant" && Boolean(parseAttachmentShare(message.content))
+}
+
+function isStructuredCard(message: BrokerMessage): boolean {
+  if (message.role !== "assistant") return false
+  return Boolean(
+    parseAttachmentRequest(message.content) ||
+      parseAttachmentPermission(message.content) ||
+      parseAttachmentShare(message.content) ||
+      parseContactCard(message.content)
+  )
+}
+
+function placeCardsAfterAssistantText(messages: BrokerMessage[]): BrokerMessage[] {
+  const ordered: BrokerMessage[] = []
+  let index = 0
+  while (index < messages.length) {
+    const current = messages[index]
+    if (current.role !== "assistant") {
+      ordered.push(current)
+      index += 1
+      continue
+    }
+    const run: BrokerMessage[] = []
+    while (index < messages.length && messages[index].role === "assistant") {
+      run.push(messages[index])
+      index += 1
+    }
+    ordered.push(
+      ...run.filter((message) => !isStructuredCard(message)),
+      ...run.filter((message) => isStructuredCard(message))
+    )
+  }
+  return ordered
 }
 
 function clusterShareMessages(messages: BrokerMessage[]): BrokerMessage[][] {

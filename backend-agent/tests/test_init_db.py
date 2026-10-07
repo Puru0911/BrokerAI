@@ -25,9 +25,12 @@ async def test_local_init_uses_create_all_and_never_drops(
         await init_db_mod.init_db()
 
     connection.run_sync.assert_awaited()
-    sql = str(connection.execute.await_args.args[0])
-    assert "DROP TABLE" not in sql
-    assert "notebook" in sql
+    sqls = " ".join(str(call.args[0]) for call in connection.execute.await_args_list)
+    assert "DROP TABLE" not in sqls
+    assert "notebook" in sqls
+    assert "notify_email" in sqls
+    assert "gender" in sqls
+    assert "date_of_birth" in sqls
 
 
 @pytest.mark.asyncio

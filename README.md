@@ -89,6 +89,7 @@ Important backend environment variables:
 - `SUPABASE_STORAGE_BUCKET` (default `broker-attachments`)
 - `INTERNAL_JOB_SECRET` (for `POST /internal/process-stale`)
 - `PUBLIC_APP_URL` / `CORS_ORIGINS` (production frontend origin)
+- `RESEND_API_KEY` / `MAIL_FROM` (optional; activity email when the user is away)
 
 Schema: local still creates tables on boot. Production requires `cd backend-agent && uv run alembic upgrade head` before start.
 
@@ -124,6 +125,10 @@ npm run dev
 ```
 
 For local auth testing, the frontend includes a temporary sign-in flow and the backend accepts `dev:<email>` bearer tokens only when `ENV=local`.
+
+## Production
+
+Frontend on Vercel (`frontend/`). API on Fly.io (`backend-agent/`). Postgres, Auth, and Storage stay on Supabase. Checklist: `docs/DEPLOY.md`.
 
 ## Tests And Checks
 

@@ -3,7 +3,12 @@ import { redirect } from "next/navigation"
 import { AuthShell } from "@/components/layout/auth-shell"
 import { BackendUnavailable } from "@/components/profile/backend-unavailable"
 import { CreateProfileForm } from "@/components/profile/create-profile-form"
-import { fetchMyProfile, getCurrentAuthIdentity } from "@/lib/api/user-profile"
+import {
+  bootstrapGoogleProfile,
+  fetchMyProfile,
+  getCurrentAuthIdentity,
+  isGoogleIdentity
+} from "@/lib/api/user-profile"
 
 export default async function ProfilePage() {
   const authIdentity = await getCurrentAuthIdentity()
@@ -25,12 +30,25 @@ export default async function ProfilePage() {
     redirect("/app")
   }
 
+  if (isGoogleIdentity(authIdentity)) {
+    const provisioned = await bootstrapGoogleProfile(authIdentity.accessToken, {
+      name: authIdentity.fullName,
+      googleAccessToken: authIdentity.googleAccessToken
+    })
+    if (provisioned) {
+      redirect("/app")
+    }
+  }
+
   return (
     <AuthShell
       title="Create your profile"
-      description="These details help qualify matches and follow up with the right context."
+      description="We’ll use these details when we introduce you to a match."
     >
-      <CreateProfileForm email={authIdentity.email ?? "your account"} />
+      <CreateProfileForm
+        email={authIdentity.email ?? "your account"}
+        defaultName={authIdentity.fullName ?? ""}
+      />
     </AuthShell>
   )
 }

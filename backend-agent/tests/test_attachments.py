@@ -10,6 +10,7 @@ from app.services.attachments import (
     ATTACHMENT_REQUEST_KIND,
     ATTACHMENT_SHARE_KIND,
     AttachmentError,
+    apply_permission_grant_status,
     can_share_directly,
     counterpart_file_inventory,
     extract_urls,
@@ -156,6 +157,24 @@ def test_parse_structured_cards() -> None:
     assert parse_structured_card(json.dumps(share))["match_id"] == "m1"
     assert parse_structured_card("hello") is None
     assert parse_structured_card(json.dumps({"kind": "broker_contact_card", "version": 1})) is None
+
+
+def test_apply_permission_grant_status_stamps_card() -> None:
+    content = json.dumps(
+        {
+            "kind": ATTACHMENT_PERMISSION_KIND,
+            "version": 1,
+            "match_id": "m1",
+            "attachment_id": "a1",
+            "label": "face photo",
+        }
+    )
+    granted = apply_permission_grant_status(content, "granted")
+    payload = json.loads(granted)
+    assert payload["status"] == "granted"
+    assert payload["attachment_id"] == "a1"
+    assert apply_permission_grant_status(content, None) == content
+    assert apply_permission_grant_status("hello", "granted") == "hello"
 
 
 def test_gallery_title_collapses_numbered_photos() -> None:

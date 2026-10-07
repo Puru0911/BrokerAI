@@ -7,7 +7,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.context import OutreachJob, ToolContext
+from app.agents.context import MailJob, OutreachJob, ToolContext
 from app.agents.runtime import run_broker_turn
 from app.db.models import (
     AgentAttachment,
@@ -39,12 +39,14 @@ class SessionCreationResult:
     messages: list[AgentMessage]
     request: AgentRequest | None
     outreach: list[OutreachJob] = field(default_factory=list)
+    mail: list[MailJob] = field(default_factory=list)
 
 
 @dataclass
 class SessionTurnResult:
     messages: list[AgentMessage]
     outreach: list[OutreachJob] = field(default_factory=list)
+    mail: list[MailJob] = field(default_factory=list)
 
 
 async def create_session_with_agent(
@@ -105,6 +107,7 @@ async def create_session_with_agent(
         messages=messages,
         request=request,
         outreach=list(ctx.queued_outreach),
+        mail=list(ctx.queued_mail),
     )
 
 
@@ -167,6 +170,7 @@ async def handle_session_message(
     return SessionTurnResult(
         messages=[user_message, *replies],
         outreach=list(ctx.queued_outreach),
+        mail=list(ctx.queued_mail),
     )
 
 

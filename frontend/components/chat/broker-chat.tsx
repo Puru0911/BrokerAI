@@ -3,14 +3,17 @@
 import { FormEvent, useEffect, useMemo, useRef, useState } from "react"
 
 import { logout } from "@/app/app/actions"
+import { parseAttachmentPermission } from "@/components/chat/attachment-cards"
 import { ChatComposer } from "@/components/chat/chat-composer"
 import { ChatHeader } from "@/components/chat/chat-header"
 import { ConnectionThread } from "@/components/chat/connection-thread"
 import { MessageList } from "@/components/chat/message-list"
 import { SessionSidebar } from "@/components/chat/session-sidebar"
 import {
+  type BrokerConnectOffer,
   type BrokerMessage,
   type BrokerSession,
+  type BrokerSessionDetail,
   type ConnectionMessage,
   type ConnectionSummary,
   addBrokerLink,
@@ -22,6 +25,7 @@ import {
   grantBrokerAttachment,
   listBrokerConnections,
   listBrokerSessions,
+  respondToIntroduction,
   sendBrokerMessage,
   sendConnectionMessage,
   uploadBrokerAttachment,
@@ -42,14 +46,38 @@ import {
   pushSupported,
   requestNotificationPermission
 } from "@/lib/push"
+import { patchNotifyEmail } from "@/lib/api/users"
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 
 type BrokerChatProps = {
   initialAccessToken: string
   userEmail: string
+  notifyEmail?: boolean
 }
 
-export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
+const NEW_SESSION_THINKING = "new"
+
+let emptySessionBoot: {
+  token: string
+  promise: Promise<BrokerSessionDetail>
+} | null = null
+
+function ensureEmptyBrokerSession(token: string) {
+  if (!emptySessionBoot || emptySessionBoot.token !== token) {
+    const promise = createBrokerSession(token)
+    emptySessionBoot = { token, promise }
+    void promise.catch(() => {
+      if (emptySessionBoot?.promise === promise) emptySessionBoot = null
+    })
+  }
+  return emptySessionBoot.promise
+}
+
+export function BrokerChat({
+  initialAccessToken,
+  userEmail,
+  notifyEmail = true
+}: BrokerChatProps) {
   const supabase = useMemo(() => createSupabaseBrowserClient(), [])
   const messageEndRef = useRef<HTMLDivElement | null>(null)
   const pushAttempted = useRef(false)
@@ -92,12 +120,20 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
   const [uploadingRequestId, setUploadingRequestId] = useState<string | null>(
     null
   )
+  const [connectOffer, setConnectOffer] = useState<BrokerConnectOffer | null>(
+    null
+  )
+  const [introducingMatchId, setIntroducingMatchId] = useState<string | null>(
+    null
+  )
   const [error, setError] = useState<string | null>(null)
   const [deletingSessionId, setDeletingSessionId] = useState<string | null>(
     null
   )
   const [showNotifyPrompt, setShowNotifyPrompt] = useState(false)
   const [notifyBusy, setNotifyBusy] = useState(false)
+  const [emailNotify, setEmailNotify] = useState(notifyEmail)
+  const [emailNotifyBusy, setEmailNotifyBusy] = useState(false)
 
   const activeSession = sessions.find(
     (session) => session.id === activeSessionId
@@ -115,19 +151,22 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     [connections]
   )
   const viewingConnection = Boolean(activeConnectionId)
+  const replyAlreadyVisible =
+    pendingMessages.length === 0 &&
+    visibleMessages.at(-1)?.role === "assistant"
   const thinking =
     Boolean(thinkingSessionId) &&
-    thinkingSessionId === activeSessionId &&
-    !viewingConnection
+    (thinkingSessionId === activeSessionId || activeSessionId === null) &&
+    !viewingConnection &&
+    !replyAlreadyVisible
   const composerLocked =
     bootLoading || sessionLoading || connectionLoading || !accessToken
-  const composerBusy = viewingConnection
-    ? sending
-    : thinkingSessionId === activeSessionId
+  const composerBusy = viewingConnection ? sending : thinking
   const activeSessionIdRef = useRef(activeSessionId)
   activeSessionIdRef.current = activeSessionId
   const activeConnectionIdRef = useRef(activeConnectionId)
   activeConnectionIdRef.current = activeConnectionId
+  const thinkingTurnRef = useRef(0)
 
   useEffect(() => {
     messageEndRef.current?.scrollIntoView({ block: "end" })
@@ -193,7 +232,9 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           setShowNotifyPrompt(true)
         }
 
-        const chatId = new URLSearchParams(window.location.search).get("chat")
+        const params = new URLSearchParams(window.location.search)
+        const chatId = params.get("chat")
+        const sessionParam = params.get("session")
         if (chatId && connectionList.some((item) => item.id === chatId)) {
           setActiveConnectionId(chatId)
           setConnectionLoading(true)
@@ -202,19 +243,29 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
         }
 
         if (sessionList.length > 0) {
-          const sessionId = sessionList[0].id
+          const sessionId =
+            sessionParam && sessionList.some((item) => item.id === sessionParam)
+              ? sessionParam
+              : sessionList[0].id
           const detail = await getBrokerSession(token, sessionId)
           if (activeSessionIdRef.current && activeSessionIdRef.current !== sessionId) {
             return
           }
           setActiveSessionId(detail.session.id)
-          setMessages(
-            hydrateMessagesWithAttachments(detail.messages, detail.attachments)
-          )
+          applySessionDetail(detail)
           setPendingMessages([])
         } else {
-          setActiveSessionId(null)
-          setMessages([])
+          const detail = await ensureEmptyBrokerSession(token)
+          if (
+            activeSessionIdRef.current &&
+            activeSessionIdRef.current !== detail.session.id
+          ) {
+            return
+          }
+          setSessions([detail.session])
+          setActiveSessionId(detail.session.id)
+          activeSessionIdRef.current = detail.session.id
+          applySessionDetail(detail)
           setPendingMessages([])
         }
       } catch (caughtError) {
@@ -286,9 +337,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           if (activeSessionIdRef.current !== sessionId) return
           if (activeConnectionIdRef.current) return
           if (detail.session.id !== sessionId) return
-          setMessages(
-            hydrateMessagesWithAttachments(detail.messages, detail.attachments)
-          )
+          applySessionDetail(detail)
         })
         .catch(() => undefined)
     }, 4000)
@@ -334,6 +383,26 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     }
   }
 
+  async function handleToggleEmailNotify() {
+    if (!accessToken || emailNotifyBusy) return
+    const next = !emailNotify
+    setEmailNotifyBusy(true)
+    setEmailNotify(next)
+    try {
+      const profile = await patchNotifyEmail(accessToken, next)
+      setEmailNotify(profile.notify_email)
+    } catch (caughtError) {
+      setEmailNotify(!next)
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Could not update email settings."
+      )
+    } finally {
+      setEmailNotifyBusy(false)
+    }
+  }
+
   function upsertConnection(summary: ConnectionSummary) {
     setConnections((current) => {
       const rest = current.filter((item) => item.id !== summary.id)
@@ -351,6 +420,13 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
       url.searchParams.delete("chat")
     }
     window.history.replaceState(null, "", url.pathname + url.search)
+  }
+
+  function applySessionDetail(detail: BrokerSessionDetail) {
+    setMessages(
+      hydrateMessagesWithAttachments(detail.messages, detail.attachments)
+    )
+    setConnectOffer(detail.connect_offer ?? null)
   }
 
   async function refreshSessions(token: string) {
@@ -398,9 +474,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
       setActiveSessionId(detail.session.id)
       activeSessionIdRef.current = detail.session.id
       setActiveConnectionId(null)
-      setMessages(
-            hydrateMessagesWithAttachments(detail.messages, detail.attachments)
-          )
+      applySessionDetail(detail)
       setPendingMessages([])
       setComposerValue("")
       setPendingFiles([])
@@ -434,6 +508,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     activeSessionIdRef.current = sessionId
     setActiveConnectionId(null)
     setMessages([])
+    setConnectOffer(null)
     setPendingMessages([])
     setComposerValue("")
     setPendingFiles([])
@@ -444,9 +519,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
       const detail = await getBrokerSession(accessToken, sessionId)
       if (activeSessionIdRef.current !== sessionId) return
       setActiveSessionId(detail.session.id)
-      setMessages(
-            hydrateMessagesWithAttachments(detail.messages, detail.attachments)
-          )
+      applySessionDetail(detail)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -503,6 +576,8 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     )
     setPendingMessages([optimisticMessage])
     let sessionId = activeSessionId
+    const thinkingTurn = ++thinkingTurnRef.current
+    setThinkingSessionId(sessionId ?? NEW_SESSION_THINKING)
 
     try {
       if (!sessionId) {
@@ -523,6 +598,9 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
               hydrateMessagesWithAttachments(detail.messages, detail.attachments)
             )
             setPendingMessages([])
+            if (thinkingTurnRef.current === thinkingTurn) {
+              setThinkingSessionId(null)
+            }
           }
           return
         }
@@ -578,8 +656,18 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           ])
         })
         setPendingMessages([])
+        if (thinkingTurnRef.current === thinkingTurn) {
+          setThinkingSessionId(null)
+        }
       }
       await refreshSessions(accessToken)
+      if (activeSessionIdRef.current === sessionId) {
+        const detail = await getBrokerSession(accessToken, sessionId)
+        if (activeSessionIdRef.current === sessionId) {
+          applySessionDetail(detail)
+          setPendingMessages([])
+        }
+      }
     } catch (caughtError) {
       setComposerValue(content)
       setPendingFiles(files)
@@ -591,9 +679,9 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           : "Could not send your message."
       )
     } finally {
-      setThinkingSessionId((current) =>
-        current === sessionId ? null : current
-      )
+      if (thinkingTurnRef.current === thinkingTurn) {
+        setThinkingSessionId(null)
+      }
     }
   }
 
@@ -679,6 +767,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     setError(null)
     setUploadingRequestId(requestId)
     const localAttachments = filesToLocalAttachments([file], sessionId)
+    let thinkingTurn: number | null = null
     try {
       const uploaded = await uploadBrokerAttachment(
         accessToken,
@@ -687,6 +776,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
         { requestId }
       )
       setUploadingRequestId(null)
+      thinkingTurn = ++thinkingTurnRef.current
       setThinkingSessionId(sessionId)
       setPendingMessages([
         createLocalUserMessage("", sessionId, localAttachments)
@@ -711,6 +801,9 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           ])
         })
         setPendingMessages([])
+        if (thinkingTurn !== null && thinkingTurnRef.current === thinkingTurn) {
+          setThinkingSessionId(null)
+        }
       }
       await refreshSessions(accessToken)
     } catch (caughtError) {
@@ -722,9 +815,9 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
       )
     } finally {
       setUploadingRequestId(null)
-      setThinkingSessionId((current) =>
-        current === sessionId ? null : current
-      )
+      if (thinkingTurn !== null && thinkingTurnRef.current === thinkingTurn) {
+        setThinkingSessionId(null)
+      }
     }
   }
 
@@ -739,12 +832,29 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     const sessionId = activeSessionId
     try {
       await grantBrokerAttachment(accessToken, attachmentId, matchId, granted)
+      const status = granted ? "granted" : "denied"
+      if (sessionId && activeSessionIdRef.current === sessionId) {
+        setMessages((current) =>
+          current.map((message) => {
+            const permission = parseAttachmentPermission(message.content)
+            if (
+              !permission ||
+              permission.attachment_id !== attachmentId ||
+              permission.match_id !== matchId
+            ) {
+              return message
+            }
+            return {
+              ...message,
+              content: JSON.stringify({ ...permission, status })
+            }
+          })
+        )
+      }
       if (!sessionId) return
       const detail = await getBrokerSession(accessToken, sessionId)
       if (activeSessionIdRef.current !== sessionId) return
-      setMessages(
-            hydrateMessagesWithAttachments(detail.messages, detail.attachments)
-          )
+      applySessionDetail(detail)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -768,6 +878,7 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     setDeletingSessionId(sessionId)
     try {
       await deleteBrokerSession(accessToken, sessionId)
+      if (emptySessionBoot) emptySessionBoot = null
       const remaining = sessions.filter((session) => session.id !== sessionId)
       setSessions(remaining)
 
@@ -779,14 +890,21 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           if (activeSessionIdRef.current !== sessionId) return
           setActiveSessionId(detail.session.id)
           activeSessionIdRef.current = detail.session.id
-          setMessages(
-            hydrateMessagesWithAttachments(detail.messages, detail.attachments)
-          )
+          applySessionDetail(detail)
           setPendingMessages([])
         } else {
-          setActiveSessionId(null)
-          activeSessionIdRef.current = null
-          setMessages([])
+          const detail = await ensureEmptyBrokerSession(accessToken)
+          if (
+            activeSessionIdRef.current &&
+            activeSessionIdRef.current !== sessionId &&
+            activeSessionIdRef.current !== detail.session.id
+          ) {
+            return
+          }
+          setSessions([detail.session])
+          setActiveSessionId(detail.session.id)
+          activeSessionIdRef.current = detail.session.id
+          applySessionDetail(detail)
           setPendingMessages([])
         }
       }
@@ -799,6 +917,30 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
     } finally {
       setDeletingSessionId(null)
       setSessionLoading(false)
+    }
+  }
+
+  async function handleIntroduction(
+    matchId: string,
+    action: "accept" | "dismiss"
+  ) {
+    if (!accessToken) return
+    setError(null)
+    setIntroducingMatchId(matchId)
+    const sessionId = activeSessionId
+    try {
+      const detail = await respondToIntroduction(accessToken, matchId, action)
+      if (!sessionId || activeSessionIdRef.current !== sessionId) return
+      applySessionDetail(detail)
+      setPendingMessages([])
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Could not update that introduction."
+      )
+    } finally {
+      setIntroducingMatchId(null)
     }
   }
 
@@ -862,6 +1004,9 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
           void handleSelectConnection(connectionId)
         }
         onDeleteSession={(sessionId) => void handleDeleteSession(sessionId)}
+        emailNotify={emailNotify}
+        emailNotifyBusy={emailNotifyBusy}
+        onToggleEmailNotify={() => void handleToggleEmailNotify()}
         logoutAction={logout}
       />
 
@@ -937,6 +1082,38 @@ export function BrokerChat({ initialAccessToken, userEmail }: BrokerChatProps) {
             endRef={messageEndRef}
           />
         )}
+
+        {!viewingConnection && connectOffer ? (
+          <div className="mx-auto w-full max-w-2xl shrink-0 px-4 sm:px-6">
+            <div className="mb-2 rounded-2xl border border-line bg-accent-soft px-4 py-3">
+              <p className="text-sm leading-6 text-ink">{connectOffer.prompt}</p>
+              <div className="mt-3 flex gap-2">
+                <button
+                  type="button"
+                  disabled={introducingMatchId === connectOffer.match_id}
+                  onClick={() =>
+                    void handleIntroduction(connectOffer.match_id, "accept")
+                  }
+                  className="h-9 flex-1 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
+                >
+                  {introducingMatchId === connectOffer.match_id
+                    ? "Working…"
+                    : "Introduce us"}
+                </button>
+                <button
+                  type="button"
+                  disabled={introducingMatchId === connectOffer.match_id}
+                  onClick={() =>
+                    void handleIntroduction(connectOffer.match_id, "dismiss")
+                  }
+                  className="h-9 rounded-xl px-3 text-xs font-medium text-muted transition hover:text-ink disabled:opacity-50"
+                >
+                  Not yet
+                </button>
+              </div>
+            </div>
+          </div>
+        ) : null}
 
         <div className="shrink-0 px-4 pb-[max(1rem,env(safe-area-inset-bottom))] pt-1 sm:px-6 sm:pb-5">
           <ChatComposer

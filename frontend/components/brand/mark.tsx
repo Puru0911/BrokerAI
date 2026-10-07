@@ -1,5 +1,7 @@
 import { cn } from "@/lib/cn"
 
+const LOGO_SRC = "/brand/logo.png"
+
 type BrandMarkProps = {
   size?: number
   className?: string
@@ -14,33 +16,16 @@ export function BrandMark({
   const decorative = !title
 
   return (
-    <svg
+    <img
+      src={LOGO_SRC}
       width={size}
       height={size}
-      viewBox="0 0 32 32"
-      fill="none"
-      className={className}
-      role={decorative ? undefined : "img"}
+      alt={decorative ? "" : title}
+      title={decorative ? undefined : title}
       aria-hidden={decorative ? true : undefined}
-      aria-label={decorative ? undefined : title}
-    >
-      {title ? <title>{title}</title> : null}
-      <circle
-        cx="12.25"
-        cy="16"
-        r="6.7"
-        stroke="currentColor"
-        strokeWidth="2.15"
-      />
-      <circle
-        cx="19.75"
-        cy="16"
-        r="6.7"
-        stroke="currentColor"
-        strokeWidth="2.15"
-      />
-      <circle cx="16" cy="16" r="2.2" fill="currentColor" />
-    </svg>
+      className={cn("rounded-[22%] object-cover", className)}
+      draggable={false}
+    />
   )
 }
 
@@ -52,14 +37,14 @@ export function BrandMarkBadge({
   className?: string
 }) {
   return (
-    <div
-      className={cn(
-        "flex items-center justify-center rounded-2xl bg-accent text-surface shadow-sm",
-        className
-      )}
+    <img
+      src={LOGO_SRC}
+      width={size}
+      height={size}
+      alt="Broker"
+      className={cn("rounded-[22%] object-cover shadow-sm", className)}
       style={{ width: size, height: size }}
-    >
-      <BrandMark size={Math.round(size * 0.58)} title="Broker" />
-    </div>
+      draggable={false}
+    />
   )
 }

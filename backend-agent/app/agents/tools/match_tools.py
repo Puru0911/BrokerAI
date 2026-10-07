@@ -12,6 +12,7 @@ from app.agents.prompts import (
     TOOL_ACCEPT_MATCH,
     TOOL_GET_MATCH_EVENTS,
     TOOL_MESSAGE_PARTY,
+    TOOL_OFFER_INTRODUCTION,
     TOOL_OPEN_MATCH,
     TOOL_REJECT_MATCH,
     TOOL_SKIP_MATCH,
@@ -21,7 +22,12 @@ from app.agents.tool_call_repair import coerce_optional_str_list
 from app.agents.tools._common import make_tool, owned_match
 from app.core.config import settings
 from app.db.models import AgentMatch, AgentMessage, AgentRequest
-from app.services.contact import share_match_contacts
+from app.services.introduction import (
+    IntroductionError,
+    dismiss_pending_offers_for_match,
+    record_party_go_ahead,
+    upsert_connect_offer,
+)
 from app.services.living_request import redacted_living_request
 from app.services.privacy import json_result, redact_identity
 from app.services.workflow import (
@@ -39,7 +45,6 @@ from app.services.workflow import (
     load_events,
     match_notebook,
     open_match_count,
-    party_has_accepted,
     party_role,
     should_reopen_closed_match,
     write_notebook,
@@ -66,8 +71,9 @@ class MessagePartyArgs(BaseModel):
         min_length=1,
         max_length=1200,
         description=(
-            "Why the other party should be reached and what they need to hear "
-            "or answer. The later turn writes the finished wording."
+            "Private brief for the later turn in the other person's chat: "
+            "what they should hear, what they still need to answer, and "
+            "nothing already in their brief. The later turn writes the wording."
         ),
     )
 
@@ -90,7 +96,10 @@ class UpdateNotebookArgs(BaseModel):
     )
     waiting_on: Literal["source", "candidate", "none"] | None = Field(
         default=None,
-        description="Who, if anyone, still owes an answer.",
+        description=(
+            "Match role that still owes an answer: source, candidate, or none. "
+            "These names match open_matches[].your_role."
+        ),
     )
     outstanding_question: str | None = Field(
         default=None,
@@ -109,7 +118,24 @@ class MatchIdReasonArgs(BaseModel):
 
 
 class AcceptMatchArgs(BaseModel):
-    match_id: str = Field(description="The match this side is agreeing to.")
+    match_id: str = Field(
+        description=(
+            "The match this person is ready to connect on, from what they "
+            "said in this chat."
+        ),
+    )
+
+
+class OfferIntroductionArgs(BaseModel):
+    match_id: str = Field(description="The open match to offer an introduction on.")
+    prompt: str = Field(
+        default="",
+        max_length=280,
+        description=(
+            "Short line shown on the introduction control, in ordinary language. "
+            "Empty uses a default."
+        ),
+    )
 
 
 class GetMatchEventsArgs(BaseModel):
@@ -159,6 +185,7 @@ async def _close_match(
     match.status = MATCH_CLOSED
     match.close_reason = reason_code
     match.last_activity_at = datetime.now(UTC)
+    await dismiss_pending_offers_for_match(ctx.db, match.id)
     await clear_waiting_for_match(ctx.db, match)
     await add_event(
         ctx.db,
@@ -371,7 +398,17 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
 
     async def accept_match(args: AcceptMatchArgs) -> str:
         match, current, other, _source = await owned_match(ctx, args.match_id)
-        if match.status == MATCH_CONNECTED:
+        try:
+            result = await record_party_go_ahead(
+                ctx.db,
+                match=match,
+                current=current,
+                other=other,
+                session_id=ctx.session.id,
+            )
+        except IntroductionError as exc:
+            return json_result(ok=False, error=str(exc))
+        if result.already_connected:
             return json_result(
                 ok=True,
                 match_id=match.id,
@@ -379,42 +416,68 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 already_connected=True,
                 outcome="Already connected.",
             )
-        if match.status == MATCH_CLOSED:
-            return json_result(ok=False, error="A closed match cannot be accepted.")
+        for message in result.contact_messages:
+            if message.session_id == ctx.session.id:
+                ctx.track(message)
+        if result.outreach is not None:
+            ctx.queued_outreach.append(result.outreach)
+        if result.contact_messages:
+            from app.services.notify import mail_jobs_for_contacts
 
-        if not await party_has_accepted(ctx.db, match.id, current.user_id):
-            await add_event(
-                ctx.db,
-                match_id=match.id,
-                event_type="party_accepted",
-                session_id=ctx.session.id,
-                user_id=current.user_id,
+            ctx.queued_mail.extend(await mail_jobs_for_contacts(ctx.db, match, result.contact_messages))
+        if not result.match_complete:
+            logger.info(
+                "accept_match recorded session=%s match_id=%s waiting_on_other=True",
+                ctx.session.id,
+                match.id,
             )
-
-        other_accepted = await party_has_accepted(ctx.db, match.id, other.user_id)
-        if not other_accepted:
-            match.last_activity_at = datetime.now(UTC)
-            match.expires_at = expiry_from_now()
             return json_result(
-                ok=False,
-                error="The other side has not agreed to the same terms yet.",
+                ok=True,
+                match_id=match.id,
                 accepted_by_you=True,
                 match_complete=False,
-                outcome="Your acceptance recorded. Other side has not accepted.",
+                outcome=(
+                    "Your go-ahead is recorded. The other side has not accepted "
+                    "yet. An introduction control is in their chat."
+                ),
             )
-
-        match.status = MATCH_ACCEPTED
-        match.last_activity_at = datetime.now(UTC)
-        await clear_waiting_for_match(ctx.db, match)
-        cards = await share_match_contacts(ctx.db, match)
-        for message in cards:
-            ctx.track(message)
+        logger.info(
+            "accept_match complete session=%s match_id=%s contact_cards=%s",
+            ctx.session.id,
+            match.id,
+            len(result.contact_messages),
+        )
         return json_result(
             ok=True,
             match_id=match.id,
             match_complete=True,
-            contact_cards=len(cards),
-            outcome=f"Both sides accepted. Contact cards delivered: {len(cards)}.",
+            contact_cards=len(result.contact_messages),
+            outcome=(
+                f"Both sides accepted. Contact cards delivered: "
+                f"{len(result.contact_messages)}."
+            ),
+        )
+
+    async def offer_introduction(args: OfferIntroductionArgs) -> str:
+        match, current, _other, _source = await owned_match(ctx, args.match_id)
+        try:
+            offer, card = await upsert_connect_offer(
+                ctx.db,
+                match=match,
+                user_id=current.user_id,
+                session_id=ctx.session.id,
+                prompt=args.prompt,
+            )
+        except IntroductionError as exc:
+            return json_result(ok=False, error=str(exc))
+        if card is not None:
+            ctx.track(card)
+        return json_result(
+            ok=True,
+            match_id=match.id,
+            offer_id=offer.id,
+            prompt=offer.prompt,
+            outcome="Introduction control shown in this chat.",
         )
 
     async def get_match_events(args: GetMatchEventsArgs) -> str:
@@ -463,6 +526,12 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             description=TOOL_ACCEPT_MATCH,
             args_model=AcceptMatchArgs,
             handler=accept_match,
+        ),
+        make_tool(
+            name="offer_introduction",
+            description=TOOL_OFFER_INTRODUCTION,
+            args_model=OfferIntroductionArgs,
+            handler=offer_introduction,
         ),
         make_tool(
             name="get_match_events",

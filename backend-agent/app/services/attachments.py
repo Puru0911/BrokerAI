@@ -914,6 +914,47 @@ async def to_attachment_read(
     )
 
 
+def apply_permission_grant_status(content: str, status: str | None) -> str:
+    if not status:
+        return content
+    parsed = parse_structured_card(content)
+    if not parsed or parsed.get("kind") != ATTACHMENT_PERMISSION_KIND:
+        return content
+    if parsed.get("status") == status:
+        return content
+    parsed["status"] = status
+    return json.dumps(parsed, ensure_ascii=False)
+
+
+async def permission_grant_statuses(
+    db: AsyncSession,
+    messages: list[AgentMessage],
+) -> dict[tuple[str, str], str]:
+    pairs: list[tuple[str, str]] = []
+    for message in messages:
+        parsed = parse_structured_card(message.content)
+        if not parsed or parsed.get("kind") != ATTACHMENT_PERMISSION_KIND:
+            continue
+        attachment_id = parsed.get("attachment_id")
+        match_id = parsed.get("match_id")
+        if isinstance(attachment_id, str) and isinstance(match_id, str):
+            pairs.append((attachment_id, match_id))
+    if not pairs:
+        return {}
+    result = await db.execute(
+        select(AgentAttachmentGrant).where(
+            AgentAttachmentGrant.attachment_id.in_({item[0] for item in pairs}),
+            AgentAttachmentGrant.match_id.in_({item[1] for item in pairs}),
+        )
+    )
+    wanted = set(pairs)
+    return {
+        (grant.attachment_id, grant.match_id): grant.status
+        for grant in result.scalars().all()
+        if (grant.attachment_id, grant.match_id) in wanted
+    }
+
+
 async def serialize_messages(
     db: AsyncSession,
     messages: list[AgentMessage],
@@ -921,6 +962,7 @@ async def serialize_messages(
     viewer_user_id: str,
 ) -> list[BrokerMessageRead]:
     grouped = await attachments_for_messages(db, messages, viewer_user_id=viewer_user_id)
+    grants = await permission_grant_statuses(db, messages)
     serialized: list[BrokerMessageRead] = []
     for message in messages:
         items = grouped.get(message.id) or []
@@ -928,7 +970,15 @@ async def serialize_messages(
         for attachment in items:
             allowed = await viewer_can_access(db, attachment, viewer_user_id)
             reads.append(await to_attachment_read(attachment, include_secrets=allowed))
-        serialized.append(BrokerMessageRead.from_message(message, reads))
+        parsed = parse_structured_card(message.content)
+        content = message.content
+        if parsed and parsed.get("kind") == ATTACHMENT_PERMISSION_KIND:
+            status = grants.get((str(parsed.get("attachment_id")), str(parsed.get("match_id"))))
+            content = apply_permission_grant_status(content, status)
+        read = BrokerMessageRead.from_message(message, reads)
+        if content != message.content:
+            read = read.model_copy(update={"content": content})
+        serialized.append(read)
     return serialized
 
 

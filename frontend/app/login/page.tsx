@@ -6,7 +6,7 @@ import { useSearchParams } from "next/navigation"
 import { AuthShell } from "@/components/layout/auth-shell"
 import { Button } from "@/components/ui/button"
 import { Input } from "@/components/ui/input"
-import { Spinner } from "@/components/icons"
+import { IconGoogle, Spinner } from "@/components/icons"
 import { devSignIn } from "@/app/login/actions"
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 
@@ -19,6 +19,7 @@ function LoginContent() {
   const [email, setEmail] = useState("")
   const [status, setStatus] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
+  const showGoogle = process.env.NODE_ENV !== "production"
 
   async function signInWithGoogle() {
     setStatus(null)
@@ -30,7 +31,17 @@ function LoginContent() {
         options: {
           redirectTo: `${origin}/auth/callback?next=${encodeURIComponent(
             nextPath
-          )}`
+          )}`,
+          scopes: [
+            "openid",
+            "email",
+            "profile",
+            "https://www.googleapis.com/auth/user.gender.read",
+            "https://www.googleapis.com/auth/user.birthday.read"
+          ].join(" "),
+          queryParams: {
+            access_type: "offline"
+          }
         }
       })
       if (error) setStatus(error.message)
@@ -67,22 +78,30 @@ function LoginContent() {
       title="Welcome back"
       description="Sign in to continue to your matching workspace."
     >
-      <div className="space-y-3">
-        <Button
-          onClick={signInWithGoogle}
-          disabled={loading}
-          className="h-11 w-full"
-        >
-          {loading ? <Spinner className="h-4 w-4" /> : null}
-          Continue with Google
-        </Button>
-      </div>
+      {showGoogle ? (
+        <>
+          <div className="space-y-3">
+            <Button
+              onClick={signInWithGoogle}
+              disabled={loading}
+              className="h-11 w-full"
+            >
+              {loading ? (
+                <Spinner className="h-4 w-4" />
+              ) : (
+                <IconGoogle className="h-[18px] w-[18px]" />
+              )}
+              Continue with Google
+            </Button>
+          </div>
 
-      <div className="my-6 flex items-center gap-3">
-        <div className="h-px flex-1 bg-line" />
-        <div className="text-xs font-medium text-muted">or</div>
-        <div className="h-px flex-1 bg-line" />
-      </div>
+          <div className="my-6 flex items-center gap-3">
+            <div className="h-px flex-1 bg-line" />
+            <div className="text-xs font-medium text-muted">or</div>
+            <div className="h-px flex-1 bg-line" />
+          </div>
+        </>
+      ) : null}
 
       <div className="space-y-3">
         <label className="block text-sm font-medium text-ink" htmlFor="email">
@@ -98,7 +117,7 @@ function LoginContent() {
         <Button
           onClick={sendMagicLink}
           disabled={loading || !email}
-          variant="secondary"
+          variant={showGoogle ? "secondary" : "primary"}
           className="h-11 w-full"
         >
           Send magic link

@@ -164,12 +164,27 @@ class BrokerRequestRead(BaseModel):
         )
 
 
+class BrokerConnectOfferRead(BaseModel):
+    id: str
+    match_id: str
+    prompt: str
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BrokerIntroductionAction(BaseModel):
+    action: Literal["accept", "dismiss"]
+
+
 class BrokerSessionDetail(BaseModel):
     session: BrokerSessionRead
     messages: list[BrokerMessageRead]
     request: BrokerRequestRead | None = None
     attachments: list[BrokerAttachmentRead] = Field(default_factory=list)
     pending_upload_requests: list[BrokerAttachmentRequestRead] = Field(default_factory=list)
+    connect_offer: BrokerConnectOfferRead | None = None
 
 
 class BrokerRequestMatch(BaseModel):
@@ -224,7 +239,6 @@ class BrokerPartyConnectionRead(BaseModel):
 class ConnectionPeerRead(BaseModel):
     user_id: str
     name: str
-    location: str
     request_title: str | None = None
     request_summary: str | None = None
 

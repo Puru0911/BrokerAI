@@ -1,6 +1,9 @@
 "use client"
 
-import { Spinner } from "@/components/icons"
+import { useEffect, useState } from "react"
+import { createPortal } from "react-dom"
+
+import { IconX, Spinner } from "@/components/icons"
 import { cn } from "@/lib/cn"
 import type { BrokerAttachment } from "@/lib/api/broker"
 import { useAuthObjectUrl } from "@/lib/use-auth-object-url"
@@ -34,6 +37,7 @@ export type AttachmentPermissionPayload = {
   label: string
   purpose?: string | null
   reason?: string
+  status?: "granted" | "denied" | string | null
 }
 
 export type AttachmentSharePayload = {
@@ -68,6 +72,9 @@ export function AttachmentStack({
   inverted?: boolean
   accessToken?: string | null
 }) {
+  const [preview, setPreview] = useState<{ src: string; name: string } | null>(
+    null
+  )
   if (!attachments.length) return null
   const images = attachments.filter(isImageAttachment)
   const rest = attachments.filter((item) => !isImageAttachment(item))
@@ -78,7 +85,9 @@ export function AttachmentStack({
         <div
           className={cn(
             "grid gap-1.5",
-            images.length === 1 ? "grid-cols-1" : "grid-cols-2"
+            images.length === 1
+              ? "grid-cols-1 justify-items-start"
+              : "grid-cols-2"
           )}
         >
           {images.map((item) => (
@@ -88,6 +97,7 @@ export function AttachmentStack({
               inverted={inverted}
               accessToken={accessToken}
               compact={images.length > 1}
+              onOpen={(src, name) => setPreview({ src, name })}
             />
           ))}
         </div>
@@ -100,6 +110,13 @@ export function AttachmentStack({
           accessToken={accessToken}
         />
       ))}
+      {preview ? (
+        <ImageLightbox
+          src={preview.src}
+          name={preview.name}
+          onClose={() => setPreview(null)}
+        />
+      ) : null}
     </div>
   )
 }
@@ -108,24 +125,35 @@ function AuthenticatedImage({
   attachment,
   inverted,
   accessToken,
-  compact = false
+  compact = false,
+  onOpen
 }: {
   attachment: StackAttachment
   inverted: boolean
   accessToken?: string | null
   compact?: boolean
+  onOpen: (src: string, name: string) => void
 }) {
   const src = useAuthObjectUrl(attachment.content_url, accessToken)
   const name = attachment.label || attachment.original_filename || "Photo"
+  const [natural, setNatural] = useState<{ width: number; height: number } | null>(
+    null
+  )
+  const portrait = Boolean(natural && natural.height > natural.width)
 
   return (
-    <a
-      href={src || undefined}
-      target={src ? "_blank" : undefined}
-      rel="noreferrer"
+    <button
+      type="button"
+      onClick={() => {
+        if (src) onOpen(src, name)
+      }}
+      disabled={!src}
+      aria-label={`View ${name}`}
       className={cn(
-        "block overflow-hidden rounded-xl",
-        inverted ? "bg-white/15 ring-1 ring-white/20" : "bg-canvas"
+        "block overflow-hidden rounded-xl border-0 p-0 text-left",
+        compact ? "w-full" : "w-fit max-w-full",
+        inverted ? "bg-white/15 ring-1 ring-white/20" : "bg-canvas",
+        src && "cursor-zoom-in"
       )}
     >
       {src ? (
@@ -133,22 +161,83 @@ function AuthenticatedImage({
         <img
           src={src}
           alt={name}
+          onLoad={(event) => {
+            const image = event.currentTarget
+            setNatural({
+              width: image.naturalWidth,
+              height: image.naturalHeight
+            })
+          }}
           className={cn(
-            "w-full object-cover",
-            compact ? "aspect-[4/3] h-auto max-h-36" : "max-h-52 h-auto"
+            compact
+              ? "h-36 w-full object-cover"
+              : cn(
+                  "h-auto max-w-full object-contain",
+                  portrait ? "max-h-[28rem] w-auto" : "max-h-72 w-auto"
+                )
           )}
         />
       ) : (
         <div
           className={cn(
             "flex items-center justify-center text-xs text-muted",
-            compact ? "h-28" : "h-40"
+            compact ? "h-28 w-full" : "h-40 w-56"
           )}
         >
           Loading photo…
         </div>
       )}
-    </a>
+    </button>
+  )
+}
+
+function ImageLightbox({
+  src,
+  name,
+  onClose
+}: {
+  src: string
+  name: string
+  onClose: () => void
+}) {
+  useEffect(() => {
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") onClose()
+    }
+    window.addEventListener("keydown", onKey)
+    const previous = document.body.style.overflow
+    document.body.style.overflow = "hidden"
+    return () => {
+      window.removeEventListener("keydown", onKey)
+      document.body.style.overflow = previous
+    }
+  }, [onClose])
+
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[80] flex items-center justify-center bg-ink/80 p-4 sm:p-8"
+      role="dialog"
+      aria-modal="true"
+      aria-label={name}
+      onClick={onClose}
+    >
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close photo"
+        className="absolute right-4 top-4 flex h-10 w-10 items-center justify-center rounded-full bg-white/15 text-white transition hover:bg-white/25"
+      >
+        <IconX />
+      </button>
+      {/* eslint-disable-next-line @next/next/no-img-element */}
+      <img
+        src={src}
+        alt={name}
+        onClick={(event) => event.stopPropagation()}
+        className="max-h-[90vh] max-w-full rounded-2xl object-contain shadow-2xl"
+      />
+    </div>,
+    document.body
   )
 }
 
@@ -265,6 +354,9 @@ export function AttachmentPermissionCard({
   busy: boolean
   onGrant: (granted: boolean) => void
 }) {
+  const resolved =
+    payload.status === "granted" || payload.status === "denied"
+
   return (
     <div className="w-full min-w-56 space-y-3">
       <div>
@@ -275,29 +367,35 @@ export function AttachmentPermissionCard({
           Share {payload.label || "this file"}?
         </div>
         <p className="mt-1 text-sm leading-5 text-muted">
-          {payload.reason ||
-            "This looks personal. I need your OK before I share it."}
+          {resolved
+            ? payload.status === "granted"
+              ? "You allowed this photo to be shared."
+              : "You kept this file private."
+            : payload.reason ||
+              "This looks personal. I need your OK before I share it."}
         </p>
       </div>
-      <div className="flex gap-2">
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onGrant(true)}
-          className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
-        >
-          {busy ? <Spinner className="h-4 w-4" /> : null}
-          {busy ? "Sharing…" : "Allow"}
-        </button>
-        <button
-          type="button"
-          disabled={busy}
-          onClick={() => onGrant(false)}
-          className="h-10 flex-1 rounded-xl border border-line px-4 text-sm font-semibold text-ink transition hover:bg-canvas disabled:opacity-50"
-        >
-          Not now
-        </button>
-      </div>
+      {resolved ? null : (
+        <div className="flex gap-2">
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onGrant(true)}
+            className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
+          >
+            {busy ? <Spinner className="h-4 w-4" /> : null}
+            {busy ? "Sharing…" : "Allow"}
+          </button>
+          <button
+            type="button"
+            disabled={busy}
+            onClick={() => onGrant(false)}
+            className="h-10 flex-1 rounded-xl border border-line px-4 text-sm font-semibold text-ink transition hover:bg-canvas disabled:opacity-50"
+          >
+            Not now
+          </button>
+        </div>
+      )}
     </div>
   )
 }

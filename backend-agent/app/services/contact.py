@@ -145,7 +145,16 @@ def _contact_card_message(
         "contact": {
             "name": contact_profile.name,
             "email": contact_profile.email,
-            "location": contact_profile.location,
+            **(
+                {"gender": contact_profile.gender}
+                if contact_profile.gender
+                else {}
+            ),
+            **(
+                {"date_of_birth": contact_profile.date_of_birth.isoformat()}
+                if contact_profile.date_of_birth
+                else {}
+            ),
         },
         "request": {
             "title": other_request.title,

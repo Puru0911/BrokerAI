@@ -8,10 +8,11 @@ from datetime import UTC, datetime
 
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.agents.context import OutreachJob, ToolContext
+from app.agents.context import MailJob, OutreachJob, ToolContext
 from app.agents.runtime import run_broker_turn
 from app.db.models import AgentMatch, AgentSession, UserProfile
 from app.db.session import AsyncSessionLocal
+from app.services.notify import mail_jobs_for_outreach, schedule_mail
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_OPEN,
@@ -33,8 +34,9 @@ def schedule_outreach(jobs: list[OutreachJob]) -> None:
 async def _run_outreach_job(job: OutreachJob) -> None:
     try:
         async with AsyncSessionLocal() as db:
-            await run_match_context_turn(db, job)
+            mail = await run_match_context_turn(db, job)
             await db.commit()
+            schedule_mail(mail)
     except Exception:
         logger.exception(
             "outreach turn failed match_id=%s to=%s from_session=%s",
@@ -44,22 +46,22 @@ async def _run_outreach_job(job: OutreachJob) -> None:
         )
 
 
-async def run_match_context_turn(db: AsyncSession, job: OutreachJob) -> None:
+async def run_match_context_turn(db: AsyncSession, job: OutreachJob) -> list[MailJob]:
     """Same broker loop as a user message, on the recipient's session, no user text."""
     match = await db.get(AgentMatch, job.match_id)
     if match is None or match.status not in {MATCH_OPEN, MATCH_ACCEPTED}:
         logger.info("outreach skipped match_id=%s reason=match_unavailable", job.match_id)
-        return
+        return []
     source, candidate = await load_pair_requests(db, match)
     if source is None or candidate is None:
         logger.info("outreach skipped match_id=%s reason=missing_party", job.match_id)
-        return
+        return []
     target = request_for_role(match, source, candidate, job.to)
     session = await db.get(AgentSession, target.session_id)
     profile = await db.get(UserProfile, target.user_id)
     if session is None or profile is None:
         logger.info("outreach skipped match_id=%s reason=missing_session_or_profile", job.match_id)
-        return
+        return []
 
     ctx = ToolContext(
         db=db,
@@ -94,3 +96,12 @@ async def run_match_context_turn(db: AsyncSession, job: OutreachJob) -> None:
             job.match_id,
             len(ctx.queued_outreach),
         )
+    mail = await mail_jobs_for_outreach(
+        db,
+        session=session,
+        profile=profile,
+        replies=replies,
+    )
+    if ctx.queued_mail:
+        mail.extend(ctx.queued_mail)
+    return mail

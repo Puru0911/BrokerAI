@@ -12,13 +12,17 @@ from app.services.push import preview_text as push_preview
 from app.services.realtime import RealtimeHub
 
 
-def test_contact_card_omits_mobile_number() -> None:
+def test_contact_card_omits_unverified_contact_fields() -> None:
+    from datetime import date
+
     profile = UserProfile(
         id="user-1",
         email="priya@example.com",
         name="Priya",
         location="Pune",
         mobile_number="9999999999",
+        gender="female",
+        date_of_birth=date(1994, 6, 12),
     )
     request = AgentRequest(
         id="req-1",
@@ -38,11 +42,14 @@ def test_contact_card_omits_mobile_number() -> None:
     payload = json.loads(message.content)
     assert payload["kind"] == "broker_contact_card"
     assert "mobile_number" not in payload["contact"]
+    assert "location" not in payload["contact"]
     assert payload["contact"]["name"] == "Priya"
-    assert payload["contact"]["location"] == "Pune"
+    assert payload["contact"]["gender"] == "female"
+    assert payload["contact"]["date_of_birth"] == "1994-06-12"
     parsed = parse_contact_card(message.content)
     assert parsed is not None
     assert "mobile_number" not in parsed["contact"]
+    assert "location" not in parsed["contact"]
 
 
 def test_peer_user_id_returns_the_other_party() -> None:

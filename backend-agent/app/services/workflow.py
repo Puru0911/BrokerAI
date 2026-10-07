@@ -280,9 +280,12 @@ async def close_open_matches_for_request(
         statuses={MATCH_OPEN},
         limit=50,
     )
+    from app.services.introduction import dismiss_pending_offers_for_match
+
     for match in matches:
         match.status = MATCH_CLOSED
         match.close_reason = reason
+        await dismiss_pending_offers_for_match(db, match.id)
         await clear_waiting_for_match(db, match)
         await add_event(
             db,

@@ -19,7 +19,7 @@ export function ThinkingIndicator({ active }: { active: boolean }) {
     return () => window.clearTimeout(timeout)
   }, [active])
 
-  if (!visible) return null
+  if (!active || !visible) return null
 
   return (
     <div className="flex justify-start" aria-live="polite" aria-label="Working">

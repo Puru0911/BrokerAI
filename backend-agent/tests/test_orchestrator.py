@@ -38,6 +38,13 @@ def test_agent_message_uses_python_created_at_default() -> None:
     assert stamp.tzinfo is not None
 
 
+def test_accept_match_args_describe_this_persons_readiness() -> None:
+    from app.agents.tools.match_tools import AcceptMatchArgs
+
+    field = AcceptMatchArgs.model_fields["match_id"]
+    assert "ready to connect" in (field.description or "").lower()
+
+
 def test_update_notebook_args_allow_plan_without_facts() -> None:
     args = UpdateNotebookArgs(
         match_id="match-1",

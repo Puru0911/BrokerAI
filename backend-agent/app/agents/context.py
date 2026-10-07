@@ -40,6 +40,23 @@ class OutreachJob:
     from_session_id: str
 
 
+MailKind = Literal["broker_outreach", "intro_offered", "contacts_delivered"]
+
+
+@dataclass
+class MailJob:
+    """Transactional mail to send after the current request commits."""
+
+    kind: MailKind
+    user_id: str
+    session_id: str
+    source_id: str
+    title: str | None = None
+    preview: str | None = None
+    offer_prompt: str | None = None
+    peer_name: str | None = None
+
+
 @dataclass
 class ToolContext:
     db: AsyncSession
@@ -57,6 +74,7 @@ class ToolContext:
     opened_match_ids: list[str] = field(default_factory=list)
     new_attachment_ids: list[str] = field(default_factory=list)
     queued_outreach: list[OutreachJob] = field(default_factory=list)
+    queued_mail: list[MailJob] = field(default_factory=list)
 
     def track(self, message: AgentMessage) -> None:
         if message.session_id == self.session.id:
@@ -134,10 +152,12 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
     if identity_open:
         other_profile = await ctx.db.get(UserProfile, other.user_id)
         if other_profile is not None:
-            other_party["contact"] = {
-                "name": other_profile.name,
-                "location": other_profile.location,
-            }
+            contact: dict[str, Any] = {"name": other_profile.name}
+            if other_profile.gender:
+                contact["gender"] = other_profile.gender
+            if other_profile.date_of_birth:
+                contact["date_of_birth"] = other_profile.date_of_birth.isoformat()
+            other_party["contact"] = contact
     shared_ids = await shared_attachment_ids_for_match(ctx.db, match.id)
     your_attachments, _ = await context_attachments(ctx.db, session_id=ctx.session.id)
     other_attachments, _ = await context_attachments(ctx.db, session_id=other.session_id)

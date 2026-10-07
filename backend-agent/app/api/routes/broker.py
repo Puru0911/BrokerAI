@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import logging
+
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import desc, or_, select
@@ -23,7 +25,9 @@ from app.schemas.broker import (
     BrokerAttachmentGrantCreate,
     BrokerAttachmentPatch,
     BrokerAttachmentRead,
+    BrokerConnectOfferRead,
     BrokerEventRead,
+    BrokerIntroductionAction,
     BrokerLinkCreate,
     BrokerMatchRead,
     BrokerMessageCreate,
@@ -54,6 +58,13 @@ from app.services.attachments import (
 )
 from app.services.connections import fanout_connection_created, to_connection_summary
 from app.services.contact import create_party_connection, share_match_contacts
+from app.services.introduction import (
+    IntroductionError,
+    dismiss_connect_offer,
+    pending_offer_for_session,
+    record_party_go_ahead,
+)
+from app.services.notify import mail_jobs_for_contacts, schedule_mail
 from app.services.orchestrator import (
     create_session_with_agent,
     handle_session_message,
@@ -62,6 +73,8 @@ from app.services.outreach import schedule_outreach
 from app.services.session_delete import delete_session_cascade
 from app.services.storage import StorageNotConfiguredError
 from app.services.workflow import get_session_request, load_pair_requests
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter()
 
@@ -126,6 +139,7 @@ async def _session_detail(
         messages = list(result.scalars().all())
     if request is None:
         request = await get_session_request(db, session.id)
+    offer = await pending_offer_for_session(db, session.id)
     return BrokerSessionDetail(
         session=BrokerSessionRead.model_validate(session),
         messages=await serialize_messages(db, messages, viewer_user_id=profile.id),
@@ -135,6 +149,9 @@ async def _session_detail(
         ),
         pending_upload_requests=serialize_upload_requests(
             await list_pending_upload_requests(db, session.id)
+        ),
+        connect_offer=(
+            BrokerConnectOfferRead.model_validate(offer) if offer else None
         ),
     )
 
@@ -264,6 +281,48 @@ async def list_match_events(
     return list(result.scalars().all())
 
 
+@router.post("/matches/{match_id}/introduction", response_model=BrokerSessionDetail)
+async def act_on_introduction(
+    match_id: str,
+    payload: BrokerIntroductionAction,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BrokerSessionDetail:
+    profile = await _require_profile(db, current_user)
+    match = await _get_owned_match(match_id, db, profile)
+    source, candidate = await load_pair_requests(db, match)
+    if source is None or candidate is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker match not found")
+    current = source if source.user_id == profile.id else candidate
+    other = candidate if current.id == source.id else source
+    session = await db.get(AgentSession, current.session_id)
+    if session is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker session not found")
+    outreach = None
+    contact_messages = []
+    try:
+        if payload.action == "dismiss":
+            await dismiss_connect_offer(db, match, profile.id)
+        else:
+            result = await record_party_go_ahead(
+                db,
+                match=match,
+                current=current,
+                other=other,
+                session_id=session.id,
+            )
+            outreach = result.outreach
+            contact_messages = result.contact_messages
+    except IntroductionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await db.commit()
+    if outreach is not None:
+        schedule_outreach([outreach])
+    if contact_messages:
+        schedule_mail(await mail_jobs_for_contacts(db, match, contact_messages))
+    return await _session_detail(db, session, profile)
+
+
 @router.post("/matches/{match_id}/share-contacts", response_model=list[BrokerMessageRead])
 async def share_contacts(
     match_id: str,
@@ -282,6 +341,8 @@ async def share_contacts(
     except ValueError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await db.commit()
+    if messages:
+        schedule_mail(await mail_jobs_for_contacts(db, match, messages))
     for message in messages:
         await db.refresh(message)
     return await serialize_messages(db, messages, viewer_user_id=profile.id)
@@ -324,6 +385,7 @@ async def create_session(
     )
     await db.commit()
     schedule_outreach(result.outreach)
+    schedule_mail(result.mail)
     await db.refresh(result.session)
     return await _session_detail(
         db,
@@ -396,6 +458,7 @@ async def add_message(
     payload = await serialize_messages(db, turn.messages, viewer_user_id=profile.id)
     await db.commit()
     schedule_outreach(turn.outreach)
+    schedule_mail(turn.mail)
     return payload
 
 
@@ -567,26 +630,38 @@ async def grant_attachment_share(
     if attachment is None or attachment.status != "ready" or attachment.user_id != profile.id:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
     match = await _get_owned_match(payload.match_id, db, profile)
-    await record_grant(
-        db,
-        attachment=attachment,
-        match=match,
-        user_id=profile.id,
-        granted=payload.granted,
-        source="ui",
-    )
-    if payload.granted:
-        brief = await get_session_request(db, attachment.session_id)
-        if brief is None:
-            source, candidate = await load_pair_requests(db, match)
-            brief = source if source and source.user_id == profile.id else candidate
-        if brief is not None:
-            await share_attachment_to_match(
-                db,
-                match=match,
-                attachment=attachment,
-                from_request=brief,
-            )
-    await db.commit()
+    try:
+        await record_grant(
+            db,
+            attachment=attachment,
+            match=match,
+            user_id=profile.id,
+            granted=payload.granted,
+            source="ui",
+        )
+        await db.commit()
+    except AttachmentError as exc:
+        raise _attachment_http_error(exc) from exc
     await db.refresh(attachment)
+    if payload.granted:
+        try:
+            brief = await get_session_request(db, attachment.session_id)
+            if brief is None:
+                source, candidate = await load_pair_requests(db, match)
+                brief = source if source and source.user_id == profile.id else candidate
+            if brief is not None:
+                await share_attachment_to_match(
+                    db,
+                    match=match,
+                    attachment=attachment,
+                    from_request=brief,
+                )
+                await db.commit()
+        except Exception:
+            logger.exception(
+                "share after grant failed attachment=%s match=%s",
+                attachment_id,
+                payload.match_id,
+            )
+            await db.rollback()
     return await to_attachment_read(attachment, include_secrets=True)

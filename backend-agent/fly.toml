@@ -1,0 +1,67 @@
+# BrokerAI agent API — deploy from this directory:
+#   cd backend-agent && fly deploy
+#
+# App name and region are placeholders. Change them before the first launch
+# if brokerai-api is taken or you want a different Fly region.
+# Tokyo (nrt) sits next to the production Supabase project (ap-northeast-1).
+
+app = "brokerai-api"
+primary_region = "nrt"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  APP_NAME = "BrokerAI"
+  ENV = "production"
+  LOG_LEVEL = "INFO"
+  LOG_FILE = "/data/logs/brokerai.log"
+  CHROMA_PERSIST_DIR = "/data/chroma"
+  CHROMA_REQUEST_COLLECTION = "agent_requests"
+  VAPID_KEY_PATH = "/data/vapid.json"
+  LLM_PROVIDER = "openrouter"
+  OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+  AGENT_PROMPT_SIZE = "full"
+  AGENT_MAX_TOOL_STEPS = "8"
+  AGENT_MODEL_INVOKE_RETRIES = "3"
+  MATCH_TIMEOUT_HOURS = "48"
+  MAX_OPEN_MATCHES_PER_REQUEST = "1"
+  DATABASE_SSL_VERIFY = "false"
+  SUPABASE_URL = "https://gwowjvxtfzjgcwdacjxc.supabase.co"
+  SUPABASE_JWT_AUDIENCE = "authenticated"
+  SUPABASE_STORAGE_BUCKET = "broker-attachments"
+  # Set these to the Vercel production origin after the frontend is live:
+  #   fly secrets set PUBLIC_APP_URL='https://<project>.vercel.app' \
+  #     CORS_ORIGINS='["https://<project>.vercel.app"]' --app brokerai-api
+
+[http_service]
+  internal_port = 8000
+  force_https = true
+  # Scale to zero: stop after ~5 minutes with no proxy traffic, start on the next request.
+  # Stopped machines are not billed for CPU/RAM. The Chroma volume is billed while attached.
+  auto_stop_machines = "stop"
+  auto_start_machines = true
+  min_machines_running = 0
+  processes = ["app"]
+
+  [http_service.concurrency]
+    type = "connections"
+    hard_limit = 250
+    soft_limit = 200
+
+[[http_service.checks]]
+  grace_period = "2m"
+  interval = "15s"
+  method = "GET"
+  timeout = "5s"
+  path = "/health"
+
+# Chroma + VAPID keys. One volume = one machine. Do not scale this app.
+[mounts]
+  source = "brokerai_chroma"
+  destination = "/data"
+
+[[vm]]
+  memory = "1gb"
+  cpu_kind = "shared"
+  cpus = 1

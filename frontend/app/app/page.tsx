@@ -26,6 +26,7 @@ export default async function AppHomePage() {
     <BrokerChat
       initialAccessToken={authIdentity.accessToken}
       userEmail={authIdentity.email ?? profile.email ?? "Signed in"}
+      notifyEmail={profile.notify_email !== false}
     />
   )
 }

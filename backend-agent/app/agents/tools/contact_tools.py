@@ -12,7 +12,12 @@ from app.services.workflow import MATCH_ACCEPTED, MATCH_CONNECTED
 
 
 class ShareContactsArgs(BaseModel):
-    match_id: str = Field(description="The accepted match whose contact cards should be delivered.")
+    match_id: str = Field(
+        description=(
+            "The match whose contact cards should be delivered. Both sides "
+            "must already have accepted."
+        ),
+    )
 
 
 def build_contact_tools(ctx: ToolContext) -> list[BaseTool]:
@@ -23,6 +28,10 @@ def build_contact_tools(ctx: ToolContext) -> list[BaseTool]:
         messages = await share_match_contacts(ctx.db, match)
         for message in messages:
             ctx.track(message)
+        if messages:
+            from app.services.notify import mail_jobs_for_contacts
+
+            ctx.queued_mail.extend(await mail_jobs_for_contacts(ctx.db, match, messages))
         return json_result(
             ok=True,
             match_id=match.id,

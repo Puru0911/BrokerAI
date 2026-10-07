@@ -40,6 +40,32 @@ async def init_db() -> None:
                     "notebook JSONB DEFAULT '{}'::jsonb"
                 )
             )
+            await connection.execute(
+                text(
+                    "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS "
+                    "notify_email BOOLEAN NOT NULL DEFAULT true"
+                )
+            )
+            await connection.execute(
+                text("ALTER TABLE user_profiles ALTER COLUMN location DROP NOT NULL")
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE user_profiles ALTER COLUMN mobile_number DROP NOT NULL"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS "
+                    "gender VARCHAR(32)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS "
+                    "date_of_birth DATE"
+                )
+            )
         logger.info("Database tables ready (local create_all)")
         return
 

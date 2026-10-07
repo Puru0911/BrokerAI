@@ -56,7 +56,6 @@ export type BrokerPartyConnection = {
 export type ConnectionPeer = {
   user_id: string
   name: string
-  location: string
   request_title: string | null
   request_summary: string | null
 }
@@ -100,11 +99,20 @@ export type ConnectionDetail = {
   messages: ConnectionMessage[]
 }
 
+export type BrokerConnectOffer = {
+  id: string
+  match_id: string
+  prompt: string
+  status: string
+  created_at: string
+}
+
 export type BrokerSessionDetail = {
   session: BrokerSession
   messages: BrokerMessage[]
   attachments?: BrokerAttachment[]
   pending_upload_requests?: BrokerUploadRequest[]
+  connect_offer?: BrokerConnectOffer | null
 }
 
 export function getBrokerBackendUrl() {
@@ -265,6 +273,21 @@ export function grantBrokerAttachment(
     {
       method: "POST",
       body: JSON.stringify({ match_id: matchId, granted })
+    }
+  )
+}
+
+export function respondToIntroduction(
+  accessToken: string,
+  matchId: string,
+  action: "accept" | "dismiss"
+) {
+  return brokerFetch<BrokerSessionDetail>(
+    accessToken,
+    `/broker/matches/${matchId}/introduction`,
+    {
+      method: "POST",
+      body: JSON.stringify({ action })
     }
   )
 }

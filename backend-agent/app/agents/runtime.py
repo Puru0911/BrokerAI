@@ -51,6 +51,7 @@ _PROCESS_LEAK_MARKERS = (
     "skip_match",
     "reject_match",
     "accept_match",
+    "offer_introduction",
     "share_contacts",
     "search_again",
     "get_match_events",
@@ -77,6 +78,44 @@ def looks_like_process_dump(text: str) -> bool:
     return any(marker in lowered for marker in _PROCESS_LEAK_MARKERS)
 
 
+# Short closer after a longer update in the same turn ("All set", "That's all for now").
+_TRAILING_ACK_MAX = 120
+
+
+def user_facing_reply_text(content: Any) -> str:
+    """Ordinary assistant prose that should be shown. Empty when none or a process dump."""
+    text = message_text(content)
+    if not text or looks_like_process_dump(text):
+        return ""
+    return text
+
+
+def collapse_turn_replies(texts: list[str]) -> list[str]:
+    """Keep step updates; drop a short trailing ack once a longer reply exists."""
+    out: list[str] = []
+    for text in texts:
+        if out and len(text) <= _TRAILING_ACK_MAX and len(text) < len(out[-1]):
+            continue
+        out.append(text)
+    return out
+
+
+def collect_turn_replies(messages: list[BaseMessage], *, start: int = 0) -> list[str]:
+    """User-facing assistant content from this tool loop, including text sent with tool calls.
+
+    `start` is the index where this turn's model steps begin. Earlier items are
+    session history converted to LangChain messages and must not be saved again.
+    """
+    replies: list[str] = []
+    for message in messages[start:]:
+        if not isinstance(message, AIMessage):
+            continue
+        text = user_facing_reply_text(getattr(message, "content", ""))
+        if text:
+            replies.append(text)
+    return collapse_turn_replies(replies)
+
+
 def message_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -91,6 +130,52 @@ def message_text(content: Any) -> str:
     return str(content or "").strip()
 
 
+def _text_from_reasoning_value(value: Any) -> str:
+    if isinstance(value, str):
+        return value.strip()
+    if isinstance(value, dict):
+        for key in ("text", "summary", "content", "thinking", "reasoning"):
+            item = value.get(key)
+            if isinstance(item, str) and item.strip():
+                return item.strip()
+        return ""
+    if isinstance(value, list):
+        parts = [_text_from_reasoning_value(item) for item in value]
+        return "\n".join(part for part in parts if part)
+    return ""
+
+
+def model_thinking_text(message: Any) -> str:
+    """Model reasoning stream (OpenRouter/Groq), not the think tool."""
+    parts: list[str] = []
+    kwargs = getattr(message, "additional_kwargs", None) or {}
+    for key in ("reasoning_content", "reasoning", "thinking"):
+        text = _text_from_reasoning_value(kwargs.get(key))
+        if text:
+            parts.append(text)
+    details = kwargs.get("reasoning_details")
+    if details is not None:
+        text = _text_from_reasoning_value(details)
+        if text:
+            parts.append(text)
+    content = getattr(message, "content", None)
+    if isinstance(content, list):
+        for block in content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") in {"reasoning", "thinking", "thought"}:
+                text = _text_from_reasoning_value(block)
+                if text:
+                    parts.append(text)
+    seen: set[str] = set()
+    unique: list[str] = []
+    for part in parts:
+        if part not in seen:
+            seen.add(part)
+            unique.append(part)
+    return "\n".join(unique).strip()
+
+
 def _history_as_lc(messages: list[AgentMessage]) -> list[BaseMessage]:
     converted: list[BaseMessage] = []
     for message in messages:
@@ -99,6 +184,85 @@ def _history_as_lc(messages: list[AgentMessage]) -> list[BaseMessage]:
         elif message.role == "assistant":
             converted.append(AIMessage(content=message.content))
     return converted
+
+
+def format_session_history_transcript(messages: list[AgentMessage]) -> str:
+    """This person's earlier private thread, labeled so it cannot look like live turns."""
+    if not messages:
+        return ""
+    lines: list[str] = []
+    for message in messages:
+        if message.role == "user":
+            speaker = "user"
+        elif message.role == "assistant":
+            speaker = "broker"
+        else:
+            continue
+        text = (message.content or "").strip()
+        if not text:
+            continue
+        lines.append(f"{speaker}: {text}")
+    if not lines:
+        return ""
+    return (
+        "this_session_earlier_chat (earlier messages in this private thread):\n"
+        + "\n".join(lines)
+    )
+
+
+def inline_history_in_packet(trigger: str) -> bool:
+    """True when session history must not compete with outreach as prior turns."""
+    return trigger == "match_context"
+
+
+def build_turn_human_content(
+    packet: dict[str, Any],
+    *,
+    trigger_instruction: str,
+    history: list[AgentMessage],
+    inline_history: bool,
+) -> str:
+    """Assemble the current-turn packet. Outreach and new work sit above history."""
+    parts = [
+        f"SESSION_ROLE: {packet.get('SESSION_ROLE')}",
+        f"TRIGGER: {packet.get('TRIGGER')}",
+        "",
+        trigger_instruction,
+        "",
+    ]
+    outreach = packet.get("outreach_context")
+    if outreach:
+        parts.extend(
+            [
+                "outreach_context (why this turn exists; what this person needs "
+                "to hear or answer):",
+                str(outreach),
+                "",
+            ]
+        )
+    parts.extend(
+        [
+            f"living_request:\n{json.dumps(packet.get('living_request'), ensure_ascii=False, default=str)}",
+            "",
+            f"open_matches:\n{json.dumps(packet.get('open_matches'), ensure_ascii=False, default=str)}",
+            "",
+            f"recent_events:\n{json.dumps(packet.get('recent_events'), ensure_ascii=False, default=str)}",
+            "",
+            f"attention_pointer: {packet.get('attention_pointer')}",
+            "",
+            f"attachments:\n{json.dumps(packet.get('attachments'), ensure_ascii=False, default=str)}",
+            "",
+            f"new_uploads:\n{json.dumps(packet.get('new_uploads'), ensure_ascii=False, default=str)}",
+        ]
+    )
+    user_text = packet.get("current_user_message")
+    if user_text:
+        parts.extend(["", f"user_message:\n{user_text}"])
+    if inline_history:
+        transcript = format_session_history_transcript(history)
+        if transcript:
+            parts.extend(["", transcript])
+    return "\n".join(parts)
 
 
 def _trigger_instruction(ctx: ToolContext) -> str:
@@ -165,8 +329,12 @@ async def run_tool_loop(
     max_steps: int,
     on_tool: Any | None = None,
     session_id: str | None = None,
-) -> tuple[list[BaseMessage], str | None]:
-    """Run bind_tools until the model replies or the step budget is spent."""
+) -> tuple[list[BaseMessage], str | None, list[str]]:
+    """Run bind_tools until the model replies or the step budget is spent.
+
+    The third value is user-facing prose from this loop only (tool-step content
+    included). Session history already in `messages` is not part of that list.
+    """
     tool_map = {tool.name: tool for tool in tools}
     if hasattr(llm, "bind_tools"):
         bound = llm.bind_tools(tools, parallel_tool_calls=False)
@@ -175,6 +343,7 @@ async def run_tool_loop(
     final_text: str | None = None
     seen_calls: set[str] = set()
     sid = session_id or "-"
+    loop_start = len(messages)
 
     max_retries = max(0, int(settings.AGENT_MODEL_INVOKE_RETRIES))
     for step in range(max_steps):
@@ -220,6 +389,14 @@ async def run_tool_loop(
         if response is None:
             raise RuntimeError("model invoke returned no response")
         messages.append(response)
+        thinking = model_thinking_text(response)
+        if thinking:
+            logger.info(
+                "model thinking session=%s step=%s thinking=%s",
+                sid,
+                step + 1,
+                clip(thinking, 8000),
+            )
         tool_calls = getattr(response, "tool_calls", None) or []
         content_preview = clip(message_text(getattr(response, "content", "")), 300)
         if not tool_calls:
@@ -283,7 +460,7 @@ async def run_tool_loop(
                 await on_tool(name, args, result, latency_ms, status)
             messages.append(ToolMessage(content=str(result), tool_call_id=call_id or name))
 
-    return messages, final_text
+    return messages, final_text, collect_turn_replies(messages, start=loop_start)
 
 
 async def run_broker_turn(
@@ -327,7 +504,6 @@ async def run_broker_turn(
         ctx.session.id,
         exclude_message_id=ctx.user_message.id if ctx.user_message else None,
     )
-    user_text = ctx.user_message.content if ctx.user_message else ""
     logger.debug(
         "broker context session=%s role=%s open_matches=%s attention=%s history=%s",
         ctx.session.id,
@@ -336,38 +512,24 @@ async def run_broker_turn(
         packet.get("attention_pointer"),
         len(history),
     )
-    human = (
-        f"SESSION_ROLE: {packet.get('SESSION_ROLE')}\n"
-        f"TRIGGER: {packet.get('TRIGGER')}\n\n"
-        f"{_trigger_instruction(ctx)}\n\n"
+    inline_history = inline_history_in_packet(ctx.trigger)
+    human = build_turn_human_content(
+        packet,
+        trigger_instruction=_trigger_instruction(ctx),
+        history=history,
+        inline_history=inline_history,
     )
-    human += (
-        f"living_request:\n{json.dumps(packet.get('living_request'), ensure_ascii=False, default=str)}\n\n"
-        f"open_matches:\n{json.dumps(packet.get('open_matches'), ensure_ascii=False, default=str)}\n\n"
-        f"recent_events:\n{json.dumps(packet.get('recent_events'), ensure_ascii=False, default=str)}\n\n"
-        f"attention_pointer: {packet.get('attention_pointer')}\n"
-    )
-    human += (
-        f"attachments:\n{json.dumps(packet.get('attachments'), ensure_ascii=False, default=str)}\n\n"
-        f"new_uploads:\n{json.dumps(packet.get('new_uploads'), ensure_ascii=False, default=str)}\n"
-    )
-    if packet.get("new_uploads"):
-        human += (
-            "\nnew_uploads lists files or links this user added this turn (metadata only).\n"
-        )
-    if packet.get("outreach_context"):
-        human += f"\noutreach_context:\n{packet.get('outreach_context')}\n"
-    if user_text:
-        human += f"\nuser_message:\n{user_text}\n"
-
+    history_turns = [] if inline_history else _history_as_lc(history)
     messages: list[BaseMessage] = [
         SystemMessage(content=BROKER_SYSTEM_PROMPT),
-        *_history_as_lc(history),
+        *history_turns,
         HumanMessage(content=human),
     ]
 
+    prefix_len = len(messages)
+    replies: list[str] = []
     try:
-        messages, final_text = await run_tool_loop(
+        messages, final_text, replies = await run_tool_loop(
             model,
             tools,
             messages,
@@ -380,8 +542,8 @@ async def run_broker_turn(
             "I hit a problem while working this request. Please send that last "
             "message again in a moment."
         )
-
-    if not ctx.current_user_messages:
+        replies = collect_turn_replies(messages, start=prefix_len)
+    if not replies:
         if not final_text or looks_like_process_dump(final_text):
             logger.debug(
                 "using fallback reply session=%s process_dump=%s original=%s",
@@ -389,11 +551,16 @@ async def run_broker_turn(
                 bool(final_text) and looks_like_process_dump(final_text),
                 clip(final_text, 200),
             )
-            final_text = NATURAL_FALLBACK_REPLY
+            if not ctx.current_user_messages:
+                replies = [NATURAL_FALLBACK_REPLY]
+        else:
+            replies = [final_text]
+
+    for text in replies:
         assistant = AgentMessage(
             session_id=ctx.session.id,
             role="assistant",
-            content=final_text,
+            content=text,
         )
         ctx.db.add(assistant)
         await ctx.db.flush()

@@ -1,5 +1,6 @@
 from pathlib import Path
 
+from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -50,6 +51,8 @@ class Settings(BaseSettings):
 
     AGENT_MAX_TOOL_STEPS: int = 16
     AGENT_MODEL_INVOKE_RETRIES: int = 3
+    # full = production copy. small / compressed / compact = shorter tool and helper prompts.
+    AGENT_PROMPT_SIZE: str = "full"
     MATCH_TIMEOUT_HOURS: int = 48
     MAX_OPEN_MATCHES_PER_REQUEST: int = 1
 
@@ -72,6 +75,26 @@ class Settings(BaseSettings):
     VAPID_SUBJECT: str = "mailto:broker@localhost"
     VAPID_KEY_PATH: str = "./data/vapid.json"
 
+    RESEND_API_KEY: str | None = None
+    RESEND_API_URL: str = "https://api.resend.com/emails"
+    MAIL_FROM: str | None = None
+    MAIL_FROM_NAME: str | None = None
+    MAIL_REPLY_TO: str | None = None
+    MAIL_ENABLED: bool = True
+    MAIL_UNSUBSCRIBE_SECRET: str | None = None
+
+    @field_validator("AGENT_PROMPT_SIZE", mode="before")
+    @classmethod
+    def normalize_prompt_size(cls, value: object) -> str:
+        text = str(value or "full").strip().lower()
+        if text in {"small", "compressed", "compact", "short"}:
+            return "small"
+        return "full"
+
+    @property
+    def use_small_prompts(self) -> bool:
+        return self.AGENT_PROMPT_SIZE == "small"
+
     @property
     def vapid_key_file(self) -> Path:
         raw = Path(self.VAPID_KEY_PATH)
@@ -86,6 +109,30 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return (self.ENV or "").strip().lower() in {"production", "prod"}
+
+    @property
+    def mail_from_name(self) -> str:
+        name = (self.MAIL_FROM_NAME or self.APP_NAME or "BrokerAI").strip()
+        return name or "BrokerAI"
+
+    @property
+    def mail_signing_secret(self) -> str:
+        for value in (
+            self.MAIL_UNSUBSCRIBE_SECRET,
+            self.INTERNAL_JOB_SECRET,
+            self.RESEND_API_KEY,
+        ):
+            if value and str(value).strip():
+                return str(value).strip()
+        return "local-mail-unsubscribe"
+
+    @property
+    def can_send_mail(self) -> bool:
+        return bool(
+            self.MAIL_ENABLED
+            and (self.RESEND_API_KEY or "").strip()
+            and (self.MAIL_FROM or "").strip()
+        )
 
     @property
     def public_app_url(self) -> str:

@@ -8,24 +8,43 @@ export type CreateProfileState = {
   error: string | null
 }
 
+const GENDERS = new Set(["female", "male", "other"])
+
 export async function createProfile(
   _state: CreateProfileState,
   formData: FormData
 ): Promise<CreateProfileState> {
   const name = String(formData.get("name") ?? "").trim()
-  const location = String(formData.get("location") ?? "").trim()
-  const mobileNumber = String(formData.get("mobile_number") ?? "").trim()
+  const gender = String(formData.get("gender") ?? "").trim().toLowerCase()
+  const dateOfBirth = String(formData.get("date_of_birth") ?? "").trim()
 
   if (name.length < 2) {
-    return { error: "Enter your full name." }
+    return { error: "Enter the name we should use for you." }
   }
 
-  if (location.length < 2) {
-    return { error: "Enter your city or location." }
+  if (!GENDERS.has(gender)) {
+    return { error: "Choose how you describe your gender." }
   }
 
-  if (mobileNumber.length < 7) {
-    return { error: "Enter a valid mobile number." }
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(dateOfBirth)) {
+    return { error: "Enter your date of birth." }
+  }
+
+  const parsed = new Date(`${dateOfBirth}T00:00:00`)
+  if (Number.isNaN(parsed.getTime())) {
+    return { error: "Enter a valid date of birth." }
+  }
+
+  const today = new Date()
+  today.setHours(0, 0, 0, 0)
+  if (parsed > today) {
+    return { error: "Date of birth cannot be in the future." }
+  }
+
+  const oldest = new Date(today)
+  oldest.setFullYear(today.getFullYear() - 120)
+  if (parsed < oldest) {
+    return { error: "Enter a realistic date of birth." }
   }
 
   const accessToken = await getAccessToken()
@@ -36,8 +55,8 @@ export async function createProfile(
   try {
     await createMyProfile(accessToken, {
       name,
-      location,
-      mobile_number: mobileNumber
+      gender,
+      date_of_birth: dateOfBirth
     })
   } catch (error) {
     return {
