@@ -57,6 +57,11 @@ class AgentMessage(Base):
         ForeignKey("agent_sessions.id", ondelete="CASCADE"),
         index=True,
     )
+    match_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_matches.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
     role: Mapped[str] = mapped_column(String(16))
     content: Mapped[str] = mapped_column(Text)
     created_at: Mapped[datetime] = mapped_column(
@@ -374,6 +379,26 @@ class AgentConnectionAttachment(Base):
     )
 
     message: Mapped[AgentConnectionMessage | None] = relationship(back_populates="attachments")
+
+
+class AgentMatchReadState(Base):
+    __tablename__ = "agent_match_reads"
+    __table_args__ = (
+        UniqueConstraint("match_id", "user_id", name="uq_agent_match_reads_pair"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    match_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_matches.id", ondelete="CASCADE"),
+        index=True,
+    )
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    last_read_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+    )
+    last_read_message_id: Mapped[str | None] = mapped_column(String(36))
 
 
 class AgentConnectionReadState(Base):

@@ -44,13 +44,18 @@ export function MessageBubble({
   const isStructured = hidePlainText
 
   return (
-    <div className={cn("flex", isUser ? "justify-end" : "justify-start")}>
+    <div
+      className={cn(
+        "flex w-full min-w-0 max-w-full",
+        isUser ? "justify-end" : "justify-start"
+      )}
+    >
       <div
         className={cn(
-          "min-w-0 space-y-3 px-4 py-3 text-sm leading-6",
+          "box-border min-w-0 space-y-3 overflow-hidden px-4 py-3 text-sm leading-6",
           isStructured
-            ? "w-full max-w-[min(92%,40rem)]"
-            : "max-w-[min(82%,36rem)]",
+            ? "w-full max-w-[min(100%,40rem)]"
+            : "w-fit max-w-[min(100%,36rem)]",
           isUser
             ? "rounded-3xl rounded-br-md bg-user text-white"
             : "rounded-3xl rounded-bl-md border border-line bg-surface text-ink"
@@ -95,7 +100,7 @@ export function MessageBubble({
           />
         ) : null}
         {!hidePlainText && message.content ? (
-          <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
+          <div className="max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] [word-break:break-word]">
             {message.content}
           </div>
         ) : null}

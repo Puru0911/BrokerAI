@@ -3,6 +3,12 @@ from app.db.models.broker import AgentMessage, utc_now
 from app.services import orchestrator as orchestrator_mod
 
 
+def test_user_message_accepts_an_optional_match_lane() -> None:
+    names = orchestrator_mod.handle_session_message.__code__.co_varnames
+    assert "match_id" in names
+    assert "require_request_match" in orchestrator_mod.handle_session_message.__code__.co_names
+
+
 def test_user_message_path_does_not_auto_start_request_ready() -> None:
     source = orchestrator_mod.handle_session_message.__code__.co_names
     create = orchestrator_mod.create_session_with_agent.__code__.co_names
@@ -19,12 +25,13 @@ def test_message_party_does_not_accept_to() -> None:
         to="source",
     )
     assert "to" not in MessagePartyArgs.model_fields
-    assert "to" not in args.model_dump()
+    dumped = args.model_dump()
+    assert "to" not in dumped
     assert "location" in args.context
     schema = MessagePartyArgs.model_json_schema()
     assert "to" not in schema.get("properties", {})
     required = schema.get("required") or []
-    assert "match_id" in required
+    assert "match_id" in schema.get("properties", {})
     assert "context" in required
     assert "to" not in required
 

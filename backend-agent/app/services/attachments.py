@@ -549,11 +549,20 @@ def parse_structured_card(content: str) -> dict[str, Any] | None:
     return payload
 
 
-def _card_message(session_id: str, payload: dict[str, Any]) -> AgentMessage:
+def _card_message(
+    session_id: str,
+    payload: dict[str, Any],
+    *,
+    match_id: str | None = None,
+) -> AgentMessage:
+    lane_id = match_id or payload.get("match_id")
+    if not isinstance(lane_id, str) or not lane_id.strip():
+        lane_id = None
     return AgentMessage(
         session_id=session_id,
         role="assistant",
         content=json.dumps(payload, ensure_ascii=False),
+        match_id=lane_id,
     )
 
 
@@ -565,6 +574,7 @@ async def create_upload_request(
     purpose: str,
     suggested_share_class: str,
     hint: str,
+    match_id: str | None = None,
 ) -> tuple[AgentAttachmentRequest, AgentMessage]:
     if purpose not in PURPOSE_VALUES:
         raise AttachmentError("Unknown attachment purpose.")
@@ -591,6 +601,7 @@ async def create_upload_request(
             "hint": hint.strip(),
             "title": _purpose_title(purpose),
         },
+        match_id=match_id,
     )
     db.add(message)
     await db.flush()

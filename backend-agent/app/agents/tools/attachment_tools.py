@@ -75,7 +75,10 @@ class ClassifyAttachmentArgs(BaseModel):
 
 
 class ShareAttachmentArgs(BaseModel):
-    match_id: str = Field(description="The match that should receive these files or links.")
+    match_id: str | None = Field(
+        default=None,
+        description="The match that should receive these files or links. Defaults to the focused match lane.",
+    )
     attachment_id: str | None = Field(
         default=None,
         description="One file to deliver. Prefer attachment_ids when sharing a set.",
@@ -90,7 +93,10 @@ class ShareAttachmentArgs(BaseModel):
 
 
 class RecordShareGrantArgs(BaseModel):
-    match_id: str = Field(description="The match the personal file would be shared on.")
+    match_id: str | None = Field(
+        default=None,
+        description="The match the personal file would be shared on. Defaults to the focused match lane.",
+    )
     attachment_id: str = Field(description="The personal file or link this person was asked about.")
     granted: bool = Field(
         default=True,
@@ -136,6 +142,7 @@ def build_attachment_tools(ctx: ToolContext) -> list[BaseTool]:
             purpose=args.purpose,
             suggested_share_class=args.suggested_share_class,
             hint=args.hint,
+            match_id=ctx.focus_match_id or ctx.trigger_match_id,
         )
         ctx.track(message)
         return json_result(

@@ -9,7 +9,13 @@ from typing import Any
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import BaseTool
 
-from app.agents.context import ToolContext, build_context_packet, load_session_history
+from app.agents.context import (
+    ToolContext,
+    build_context_packet,
+    focused_match_id,
+    load_session_history,
+)
+from app.db.models.broker import utc_now
 from app.agents.prompts import (
     BROKER_SYSTEM_PROMPT,
     MATCH_CONTEXT_INSTRUCTION,
@@ -226,10 +232,17 @@ def build_turn_human_content(
     parts = [
         f"SESSION_ROLE: {packet.get('SESSION_ROLE')}",
         f"TRIGGER: {packet.get('TRIGGER')}",
-        "",
-        trigger_instruction,
-        "",
+        f"LANE: {packet.get('LANE') or 'request'}",
     ]
+    if packet.get("focus_match_id"):
+        parts.append(f"focus_match_id: {packet.get('focus_match_id')}")
+    parts.extend(
+        [
+            "",
+            trigger_instruction,
+            "",
+        ]
+    )
     outreach = packet.get("outreach_context")
     if outreach:
         parts.extend(
@@ -245,6 +258,8 @@ def build_turn_human_content(
             f"living_request:\n{json.dumps(packet.get('living_request'), ensure_ascii=False, default=str)}",
             "",
             f"open_matches:\n{json.dumps(packet.get('open_matches'), ensure_ascii=False, default=str)}",
+            "",
+            f"other_matches:\n{json.dumps(packet.get('other_matches') or [], ensure_ascii=False, default=str)}",
             "",
             f"recent_events:\n{json.dumps(packet.get('recent_events'), ensure_ascii=False, default=str)}",
             "",
@@ -490,6 +505,7 @@ async def run_broker_turn(
             session_id=ctx.session.id,
             role="assistant",
             content=UNAVAILABLE_REPLY,
+            match_id=focused_match_id(ctx),
         )
         ctx.db.add(message)
         await ctx.db.flush()
@@ -503,12 +519,16 @@ async def run_broker_turn(
         ctx.db,
         ctx.session.id,
         exclude_message_id=ctx.user_message.id if ctx.user_message else None,
+        match_id=focused_match_id(ctx),
     )
     logger.debug(
-        "broker context session=%s role=%s open_matches=%s attention=%s history=%s",
+        "broker context session=%s role=%s lane=%s focus=%s open_matches=%s other_matches=%s attention=%s history=%s",
         ctx.session.id,
         packet.get("SESSION_ROLE"),
+        packet.get("LANE"),
+        packet.get("focus_match_id"),
         len(packet.get("open_matches") or []),
+        len(packet.get("other_matches") or []),
         packet.get("attention_pointer"),
         len(history),
     )
@@ -556,15 +576,18 @@ async def run_broker_turn(
         else:
             replies = [final_text]
 
+    lane_id = focused_match_id(ctx)
     for text in replies:
         assistant = AgentMessage(
             session_id=ctx.session.id,
             role="assistant",
             content=text,
+            match_id=lane_id,
         )
         ctx.db.add(assistant)
         await ctx.db.flush()
         ctx.track(assistant)
+    ctx.session.updated_at = utc_now()
 
     logger.info(
         "broker turn complete session=%s trigger=%s replies=%s saved=%s indexed=%s searched=%s opened=%s reply=%s",

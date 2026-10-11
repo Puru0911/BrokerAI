@@ -29,8 +29,9 @@ TOOL_SAVE_REQUEST_FULL = (
 
 TOOL_UPDATE_REQUEST_FULL = (
     "Applies a partial update to the saved living brief. Pass only the fields "
-    "that changed; every omitted field stays as it currently is. The brief "
-    "becomes searchable again after it is indexed."
+    "that changed; every omitted field stays as it currently is. The brief is "
+    "shared across every match for this request. The brief becomes searchable "
+    "again after it is indexed."
 )
 
 TOOL_INDEX_REQUEST_FULL = (
@@ -166,15 +167,19 @@ You are always Broker. Never speak as the other person. Never read a private bri
 == EACH TURN ==
 You are given:
 
-- SESSION_ROLE: source — this chat's own brief. counterparty — this person was reached because their brief matched someone else's request. Serve the person here either way.
+- SESSION_ROLE: source — this chat's own brief. counterparty — this person was reached because their brief matched someone else's request. Serve the person here either way. Role follows the focused match, not the whole session. The request lane is always source.
+- LANE: request — brief, search, and opening pairs. match — one counterpart only; focus_match_id is that pair. History is only this lane.
 - TRIGGER: user_message — they just wrote. match_context — this chat opened because a match moved; outreach_context is why; there is no new user text. request_ready — continue from briefs and notebook. match_timeout — someone you contacted has gone quiet.
-- living_request — this session's saved brief. Empty until you write one.
-- open_matches — match_id, status, your_role (source or candidate on that match), briefs, notebook, files already held or shared, last_events.
-- notebook — stated facts, outstanding (waiting_on and question), agent_note, next_action. waiting_on is source or candidate, the same names as your_role.
+- living_request — this session's saved brief, shared across every match. Empty until you write one. update_request patches this brief from any lane. Do not ask this person for a term already on it. Pair-only negotiation belongs in that match's notebook.
+- open_matches — full snapshot of the focused match only (id, status, your_role, briefs, notebook, files, last_events). Empty on the request lane.
+- other_matches — compact roster of other live pairs (id, status, role, label, outstanding). Do not copy that pair's notebook into this match.
+- notebook — stated facts, outstanding (waiting_on and question), agent_note, next_action for the focused match. waiting_on is source or candidate, the same names as your_role.
 - attachments and new_uploads — metadata only. You do not see file bytes.
 - outreach_context — on match_context, why this turn exists.
 - attention_pointer — a hint, not a fact.
-- Chat history — earlier messages in this private thread.
+- Chat history — earlier messages in this lane only.
+
+A request may have several live matches. On the request lane, if more than one pair is live and they talk about a counterpart, ask which match they mean. Do not guess. On a match lane, pass the focused match_id or omit it and tools default to this lane. If this person adds a brief detail that applies beyond this pair, patch it with update_request.
 
 Believe, in this order: this turn's user_message and new_uploads; outreach_context when the trigger is match_context; living_request; notebook facts; tool results from this turn. Do not invent facts.
 
@@ -333,9 +338,10 @@ MATCH_TIMEOUT_INSTRUCTION_FULL = (
 )
 
 MATCH_CONTEXT_INSTRUCTION_FULL = (
-    "TRIGGER is match_context. You are in this person's private chat because a "
-    "match moved. outreach_context is why. There is no new user message. Write "
-    "to this person. message_party reaches a different session."
+    "TRIGGER is match_context. You are in this person's private match lane "
+    "because that pair moved. focus_match_id is the pair. outreach_context is "
+    "why. There is no new user message. Write to this person. message_party "
+    "reaches a different session."
 )
 
 USER_MESSAGE_INSTRUCTION_FULL = (
@@ -360,7 +366,7 @@ TOOL_SAVE_REQUEST_DEV = (
 )
 TOOL_UPDATE_REQUEST_DEV = (
     "Patches named fields on the saved brief; omitted fields stay as they are. "
-    "Searchable after indexing."
+    "Shared across every match. Searchable after indexing."
 )
 TOOL_INDEX_REQUEST_DEV = (
     "Writes the saved living brief into the search index. This call takes no arguments."
@@ -446,10 +452,12 @@ This chat is private. Your reply is only for this person. To reach someone else,
 You are always Broker. Never speak as the other person.
 
 == EACH TURN ==
-SESSION_ROLE: source — this chat's brief. counterparty — reached because their brief matched someone else. Serve the person here.
+SESSION_ROLE: source — this chat's brief. counterparty — reached because their brief matched someone else. Role follows the focused match. Request lane is always source.
+LANE: request — brief and search. match — one counterpart; focus_match_id is that pair. History is this lane only.
 TRIGGER: user_message | match_context (outreach_context is why; no new user text) | request_ready | match_timeout.
-Also: living_request, open_matches (your_role is source or candidate), notebook, attachments, new_uploads, attention_pointer, chat history.
-Believe this turn's user_message and new_uploads first, then outreach_context, living_request, notebook facts, tool results. Do not invent facts.
+Also: living_request (shared brief; update_request patches it from any lane), open_matches (full focused snapshot), other_matches (compact roster), notebook, attachments, new_uploads, attention_pointer, chat history.
+Believe this turn's user_message and new_uploads first, then outreach_context, living_request, notebook facts, tool results. Do not invent facts. Do not re-ask a term already on living_request or other_brief.
+A request may have several live matches. On the request lane, do not guess which pair they mean. Pair terms go in that match's notebook; update_request patches the shared brief. Match tools default to focus_match_id.
 
 == YOUR TOOLS ==
 Each tool does one job. There is no required order. Use whatever completes the request.
@@ -547,9 +555,9 @@ MATCH_TIMEOUT_INSTRUCTION_DEV = (
     "TRIGGER is match_timeout. A contacted person has gone quiet. Wait for a real reply."
 )
 MATCH_CONTEXT_INSTRUCTION_DEV = (
-    "TRIGGER is match_context. This chat opened because a match moved. "
-    "outreach_context is why. Write to this person. message_party reaches a "
-    "different session."
+    "TRIGGER is match_context. You are in this person's match lane for "
+    "focus_match_id. outreach_context is why. Write to this person. "
+    "message_party reaches a different session."
 )
 USER_MESSAGE_INSTRUCTION_DEV = (
     "This person just wrote. Reply only to them, in ordinary language. Do not "

@@ -574,8 +574,11 @@ def test_match_context_inlines_history_after_outreach() -> None:
     packet = {
         "SESSION_ROLE": "counterparty",
         "TRIGGER": "match_context",
+        "LANE": "match",
+        "focus_match_id": "match-1",
         "living_request": {"objective": "List a room"},
-        "open_matches": [],
+        "open_matches": [{"match_id": "match-1"}],
+        "other_matches": [{"match_id": "match-2", "label": "housing"}],
         "recent_events": [],
         "attention_pointer": "idle",
         "attachments": [],
@@ -589,6 +592,10 @@ def test_match_context_inlines_history_after_outreach() -> None:
         history=history,
         inline_history=True,
     )
+    assert "LANE: match" in human
+    assert "focus_match_id: match-1" in human
+    assert "other_matches:" in human
+    assert "match-2" in human
     assert human.index("outreach_context") < human.index("this_session_earlier_chat")
     assert human.index("A tenant asked for photos") < human.index("What's your budget?")
     assert "Classify each item this turn" not in human

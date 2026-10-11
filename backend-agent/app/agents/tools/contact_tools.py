@@ -12,10 +12,11 @@ from app.services.workflow import MATCH_ACCEPTED, MATCH_CONNECTED
 
 
 class ShareContactsArgs(BaseModel):
-    match_id: str = Field(
+    match_id: str | None = Field(
+        default=None,
         description=(
             "The match whose contact cards should be delivered. Both sides "
-            "must already have accepted."
+            "must already have accepted. Defaults to the focused match lane."
         ),
     )
 

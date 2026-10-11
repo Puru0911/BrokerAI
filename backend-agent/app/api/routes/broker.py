@@ -29,6 +29,7 @@ from app.schemas.broker import (
     BrokerEventRead,
     BrokerIntroductionAction,
     BrokerLinkCreate,
+    BrokerMatchLaneRead,
     BrokerMatchRead,
     BrokerMessageCreate,
     BrokerMessageRead,
@@ -61,8 +62,15 @@ from app.services.contact import create_party_connection, share_match_contacts
 from app.services.introduction import (
     IntroductionError,
     dismiss_connect_offer,
-    pending_offer_for_session,
+    pending_offers_for_session,
     record_party_go_ahead,
+)
+from app.services.match_lanes import (
+    MatchLaneError,
+    mark_match_read,
+    serialize_match_lanes,
+    serialize_session_list,
+    serialize_session_read,
 )
 from app.services.notify import mail_jobs_for_contacts, schedule_mail
 from app.services.orchestrator import (
@@ -139,9 +147,22 @@ async def _session_detail(
         messages = list(result.scalars().all())
     if request is None:
         request = await get_session_request(db, session.id)
-    offer = await pending_offer_for_session(db, session.id)
+    offers = await pending_offers_for_session(db, session.id)
+    offers_by_match = {offer.match_id: offer for offer in offers}
+    lanes: list[BrokerMatchLaneRead] = []
+    if request is not None:
+        lanes = await serialize_match_lanes(
+            db,
+            request=request,
+            profile=profile,
+            offers_by_match=offers_by_match,
+        )
+    offer = offers[0] if offers else None
+    session_read = await serialize_session_read(
+        db, session, profile, request=request, lanes=lanes
+    )
     return BrokerSessionDetail(
-        session=BrokerSessionRead.model_validate(session),
+        session=session_read,
         messages=await serialize_messages(db, messages, viewer_user_id=profile.id),
         request=BrokerRequestRead.from_request(request) if request else None,
         attachments=await serialize_session_attachments(
@@ -153,6 +174,8 @@ async def _session_detail(
         connect_offer=(
             BrokerConnectOfferRead.model_validate(offer) if offer else None
         ),
+        matches=lanes,
+        connect_offers=[BrokerConnectOfferRead.model_validate(item) for item in offers],
     )
 
 
@@ -168,14 +191,14 @@ def _attachment_http_error(exc: Exception) -> HTTPException:
 async def list_sessions(
     current_user: CurrentUser = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
-) -> list[AgentSession]:
+) -> list[BrokerSessionRead]:
     profile = await _require_profile(db, current_user)
     result = await db.execute(
         select(AgentSession)
         .where(AgentSession.user_id == profile.id)
         .order_by(desc(AgentSession.updated_at))
     )
-    return list(result.scalars().all())
+    return await serialize_session_list(db, profile, list(result.scalars().all()))
 
 
 @router.get("/requests", response_model=list[BrokerRequestRead])
@@ -265,6 +288,18 @@ async def get_match(
 ) -> AgentMatch:
     profile = await _require_profile(db, current_user)
     return await _get_owned_match(match_id, db, profile)
+
+
+@router.post("/matches/{match_id}/read", status_code=status.HTTP_204_NO_CONTENT)
+async def mark_match_lane_read(
+    match_id: str,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> None:
+    profile = await _require_profile(db, current_user)
+    await _get_owned_match(match_id, db, profile)
+    await mark_match_read(db, match_id=match_id, user_id=profile.id)
+    await db.commit()
 
 
 @router.get("/matches/{match_id}/events", response_model=list[BrokerEventRead])
@@ -452,7 +487,10 @@ async def add_message(
             session=session,
             content=payload.content,
             attachment_ids=payload.attachment_ids,
+            match_id=payload.match_id,
         )
+    except MatchLaneError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=str(exc)) from exc
     except AttachmentError as exc:
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
     payload = await serialize_messages(db, turn.messages, viewer_user_id=profile.id)

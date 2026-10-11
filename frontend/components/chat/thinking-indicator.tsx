@@ -6,7 +6,13 @@ import { BrandMark } from "@/components/brand/mark"
 
 const SHOW_DELAY_MS = 280
 
-export function ThinkingIndicator({ active }: { active: boolean }) {
+export function ThinkingIndicator({
+  active,
+  onShown
+}: {
+  active: boolean
+  onShown?: () => void
+}) {
   const [visible, setVisible] = useState(false)
 
   useEffect(() => {
@@ -15,9 +21,12 @@ export function ThinkingIndicator({ active }: { active: boolean }) {
       return
     }
 
-    const timeout = window.setTimeout(() => setVisible(true), SHOW_DELAY_MS)
+    const timeout = window.setTimeout(() => {
+      setVisible(true)
+      onShown?.()
+    }, SHOW_DELAY_MS)
     return () => window.clearTimeout(timeout)
-  }, [active])
+  }, [active, onShown])
 
   if (!active || !visible) return null
 

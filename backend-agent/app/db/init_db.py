@@ -66,6 +66,38 @@ async def init_db() -> None:
                     "date_of_birth DATE"
                 )
             )
+            await connection.execute(
+                text(
+                    "ALTER TABLE agent_messages ADD COLUMN IF NOT EXISTS "
+                    "match_id VARCHAR(36)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_messages_match_id "
+                    "ON agent_messages (match_id)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_messages_session_match "
+                    "ON agent_messages (session_id, match_id)"
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_match_reads (
+                        id VARCHAR(36) PRIMARY KEY,
+                        match_id VARCHAR(36) NOT NULL REFERENCES agent_matches(id) ON DELETE CASCADE,
+                        user_id VARCHAR(64) NOT NULL,
+                        last_read_at TIMESTAMPTZ DEFAULT now(),
+                        last_read_message_id VARCHAR(36),
+                        CONSTRAINT uq_agent_match_reads_pair UNIQUE (match_id, user_id)
+                    )
+                    """
+                )
+            )
         logger.info("Database tables ready (local create_all)")
         return
 

@@ -22,7 +22,9 @@ Point the frontend at this process with `NEXT_PUBLIC_BACKEND_URL=http://127.0.0.
 Chat routes match the existing frontend:
 
 - `POST /broker/sessions`
-- `POST /broker/sessions/{id}/messages`
+- `POST /broker/sessions/{id}/messages` — optional `match_id` for a match lane; omit for the request/brief lane
+- `GET /broker/sessions` / `GET /broker/sessions/{id}` — include `matches[]` (label, unread, waiting, connect offer, connection id)
+- `POST /broker/matches/{id}/read` — clear a match-lane unread badge
 - `POST /broker/matches/{id}/connect` — creates a direct chat (no phone number on the card)
 - `GET /broker/connections` — all 1:1 chats for the current user
 - `WS /broker/ws` — live messages (query `access_token`)
@@ -38,7 +40,7 @@ When a user does not have `/broker/ws` open, the agent emails them (Resend) for 
 
 ## Data
 
-Broker tables are new (`agent_sessions`, `agent_messages`, `agent_requests`, `agent_matches`, `agent_events`, `agent_connections`, `agent_connection_messages`, `agent_connection_attachments`, `agent_connection_reads`, `agent_push_subscriptions`, `agent_mail_log`, `agent_attachments`, `agent_attachment_requests`, `agent_attachment_grants`, `agent_attachment_shares`) so this service can share the same Postgres database as `backend/` without colliding. `user_profiles` is shared (`notify_email` defaults true).
+Broker tables are new (`agent_sessions`, `agent_messages`, `agent_requests`, `agent_matches`, `agent_match_reads`, `agent_events`, `agent_connections`, `agent_connection_messages`, `agent_connection_attachments`, `agent_connection_reads`, `agent_push_subscriptions`, `agent_mail_log`, `agent_attachments`, `agent_attachment_requests`, `agent_attachment_grants`, `agent_attachment_shares`) so this service can share the same Postgres database as `backend/` without colliding. `user_profiles` is shared (`notify_email` defaults true).
 
 Session files go to a private Supabase Storage bucket (`broker-attachments`). Set `SUPABASE_SERVICE_ROLE_KEY`. The agent classifies uploads from conversation as `public` (shareable) or `personal` (needs permission).
 
@@ -54,7 +56,7 @@ Kept short on purpose:
 - Match: `open` | `accepted` | `connected` | `closed`
 - Session: `open` | `closed`
 
-A request may wait on one match via `waiting_match_id`. That is attention, not a router. Every user message still goes to the same agent. Match terms live on `agent_matches.notebook`, not in event `message_text`.
+A request may have several live matches (default cap 3). `agent_messages.match_id` is the lane: null is the brief/request chat, set is that pair. `waiting_match_id` is attention, not a router. POST `/sessions/{id}/messages` may include `match_id`. Every user message still goes to the same agent with a focused context packet. Match terms live on `agent_matches.notebook`, not in event `message_text`.
 
 ## Tests
 

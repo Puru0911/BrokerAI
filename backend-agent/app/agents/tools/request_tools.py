@@ -117,6 +117,9 @@ class NoArgs(BaseModel):
 
 def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
     async def save_request(args: SaveRequestArgs) -> str:
+        title = create_title(args.objective) if args.objective.strip() else "New broker request"
+        summary = args.objective.strip()
+        request = ctx.request or await get_session_request(ctx.db, ctx.session.id)
         details = {
             "objective": args.objective.strip(),
             "hard_constraints": [item.strip() for item in args.hard_constraints if item.strip()],
@@ -127,9 +130,6 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             "timeline": args.timeline.strip(),
             "freeform_notes": args.freeform_notes.strip(),
         }
-        title = create_title(args.objective) if args.objective.strip() else "New broker request"
-        summary = args.objective.strip()
-        request = ctx.request or await get_session_request(ctx.db, ctx.session.id)
         if request is None:
             request = AgentRequest(
                 session_id=ctx.session.id,

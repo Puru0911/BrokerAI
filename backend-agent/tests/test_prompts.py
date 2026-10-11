@@ -109,6 +109,9 @@ def test_broker_prompt_states_purpose_and_capabilities() -> None:
     assert "outreach_context" in lowered
     assert "new_uploads" in lowered
     assert "your_role" in lowered
+    assert "lane" in lowered
+    assert "focus_match_id" in lowered
+    assert "other_matches" in lowered
     assert "never speak in first person" in lowered
     assert "tool names" in lowered
     assert "one question" in lowered
@@ -118,12 +121,15 @@ def test_broker_prompt_states_purpose_and_capabilities() -> None:
     assert "== FILES ==" not in BROKER_SYSTEM_PROMPT_FULL
     assert "== CONNECTING PEOPLE ==" not in BROKER_SYSTEM_PROMPT_FULL
     assert "== HOW TO DECIDE, EVERY TURN ==" not in BROKER_SYSTEM_PROMPT_FULL
+    assert "shared across every match" in lowered
+    assert "patch it with update_request" in lowered
 
 
 def test_small_system_prompt_covers_the_same_contract() -> None:
     _assert_system_prompt(BROKER_SYSTEM_PROMPT_DEV)
     assert len(BROKER_SYSTEM_PROMPT_DEV) < len(BROKER_SYSTEM_PROMPT_FULL)
     assert BROKER_SYSTEM_PROMPT == BROKER_SYSTEM_PROMPT_FULL
+    assert "update_request patches" in BROKER_SYSTEM_PROMPT_DEV.lower()
 
 
 def test_prompt_size_setting_selects_small_or_full() -> None:

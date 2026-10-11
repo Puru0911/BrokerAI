@@ -94,9 +94,9 @@ def introduction_offer_is_live(offer_status: str, match_status: str) -> bool:
     return offer_status == OFFER_PENDING and match_status in LIVE_INTRODUCTION_STATUSES
 
 
-async def pending_offer_for_session(
+async def pending_offers_for_session(
     db: AsyncSession, session_id: str
-) -> AgentConnectOffer | None:
+) -> list[AgentConnectOffer]:
     result = await db.execute(
         select(AgentConnectOffer)
         .join(AgentMatch, AgentMatch.id == AgentConnectOffer.match_id)
@@ -107,7 +107,14 @@ async def pending_offer_for_session(
         )
         .order_by(AgentConnectOffer.updated_at.desc())
     )
-    return result.scalars().first()
+    return list(result.scalars().all())
+
+
+async def pending_offer_for_session(
+    db: AsyncSession, session_id: str
+) -> AgentConnectOffer | None:
+    offers = await pending_offers_for_session(db, session_id)
+    return offers[0] if offers else None
 
 
 async def dismiss_pending_offers_for_match(
@@ -166,6 +173,7 @@ async def upsert_connect_offer(
             session_id=session_id,
             role="assistant",
             content=json.dumps(_card_payload(offer), ensure_ascii=False),
+            match_id=match.id,
         )
         db.add(message)
         await db.flush()

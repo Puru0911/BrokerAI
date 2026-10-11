@@ -1,6 +1,6 @@
 "use client"
 
-import type { RefObject } from "react"
+import { useCallback, useLayoutEffect, useRef, type RefObject } from "react"
 
 import {
   parseAttachmentPermission,
@@ -21,7 +21,9 @@ export function MessageList({
   thinking,
   error,
   actions,
-  endRef
+  endRef,
+  emptyTitle,
+  emptyDetail
 }: {
   messages: BrokerMessage[]
   bootLoading: boolean
@@ -30,12 +32,32 @@ export function MessageList({
   error: string | null
   actions: MessageActions
   endRef: RefObject<HTMLDivElement | null>
+  emptyTitle?: string
+  emptyDetail?: string
 }) {
   const showSkeleton = bootLoading || sessionLoading
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const lastMessageId = messages.at(-1)?.id
+
+  const scrollToBottom = useCallback(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+    requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight
+    })
+  }, [])
+
+  useLayoutEffect(() => {
+    scrollToBottom()
+  }, [messages.length, lastMessageId, thinking, scrollToBottom])
 
   return (
-    <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
-      <div className="mx-auto flex min-h-full max-w-2xl flex-col gap-4">
+    <div
+      ref={scrollerRef}
+      className="scrollbar-thin min-h-0 w-full min-w-0 flex-1 overflow-x-hidden overflow-y-auto px-4 py-6 sm:px-6"
+    >
+      <div className="mx-auto flex min-h-full w-full min-w-0 max-w-2xl flex-col gap-4">
         {error ? (
           <div className="rounded-2xl border border-danger/20 bg-danger-soft px-4 py-3 text-sm text-danger">
             {error}
@@ -45,7 +67,7 @@ export function MessageList({
         {showSkeleton ? (
           <ThreadSkeleton />
         ) : messages.length === 0 && !thinking ? (
-          <EmptyState />
+          <EmptyState title={emptyTitle} detail={emptyDetail} />
         ) : (
           <>
             {clusterShareMessages(
@@ -59,7 +81,7 @@ export function MessageList({
                 actions={actions}
               />
             ))}
-            <ThinkingIndicator active={thinking} />
+            <ThinkingIndicator active={thinking} onShown={scrollToBottom} />
           </>
         )}
         <div ref={endRef} />

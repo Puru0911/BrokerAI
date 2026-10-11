@@ -19,7 +19,7 @@ from app.agents.prompts import (
     TOOL_UPDATE_NOTEBOOK,
 )
 from app.agents.tool_call_repair import coerce_optional_str_list
-from app.agents.tools._common import make_tool, owned_match
+from app.agents.tools._common import adopt_focus_if_idle, make_tool, owned_match
 from app.core.config import settings
 from app.db.models import AgentMatch, AgentMessage, AgentRequest
 from app.services.introduction import (
@@ -64,8 +64,9 @@ class OpenMatchArgs(BaseModel):
 class MessagePartyArgs(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    match_id: str = Field(
-        description="The match whose other party should be reached.",
+    match_id: str | None = Field(
+        default=None,
+        description="The match whose other party should be reached. Defaults to the focused match lane.",
     )
     context: str = Field(
         min_length=1,
@@ -79,7 +80,10 @@ class MessagePartyArgs(BaseModel):
 
 
 class UpdateNotebookArgs(BaseModel):
-    match_id: str
+    match_id: str | None = Field(
+        default=None,
+        description="The match whose notebook to update. Defaults to the focused match lane.",
+    )
     facts: Annotated[list[str] | None, BeforeValidator(coerce_optional_str_list)] = Field(
         default=None,
         description="Concrete terms this person actually stated.",
@@ -109,7 +113,10 @@ class UpdateNotebookArgs(BaseModel):
 
 
 class MatchIdReasonArgs(BaseModel):
-    match_id: str
+    match_id: str | None = Field(
+        default=None,
+        description="The match to close. Defaults to the focused match lane.",
+    )
     reason: str = Field(
         default="",
         max_length=400,
@@ -118,16 +125,20 @@ class MatchIdReasonArgs(BaseModel):
 
 
 class AcceptMatchArgs(BaseModel):
-    match_id: str = Field(
+    match_id: str | None = Field(
+        default=None,
         description=(
             "The match this person is ready to connect on, from what they "
-            "said in this chat."
+            "said in this chat. Defaults to the focused match lane."
         ),
     )
 
 
 class OfferIntroductionArgs(BaseModel):
-    match_id: str = Field(description="The open match to offer an introduction on.")
+    match_id: str | None = Field(
+        default=None,
+        description="The open match to offer an introduction on. Defaults to the focused match lane.",
+    )
     prompt: str = Field(
         default="",
         max_length=280,
@@ -139,7 +150,10 @@ class OfferIntroductionArgs(BaseModel):
 
 
 class GetMatchEventsArgs(BaseModel):
-    match_id: str = Field(description="The match whose history and notebook to load.")
+    match_id: str | None = Field(
+        default=None,
+        description="The match whose history and notebook to load. Defaults to the focused match lane.",
+    )
 
 
 async def _deliver_side(
@@ -156,6 +170,7 @@ async def _deliver_side(
         session_id=party_request.session_id,
         role="assistant",
         content=content,
+        match_id=match.id,
     )
     ctx.db.add(message)
     await ctx.db.flush()
@@ -237,11 +252,26 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 )
             match = existing
             reused = existing.status == MATCH_OPEN
+            if not reused:
+                cap = settings.MAX_OPEN_MATCHES_PER_REQUEST
+                if await open_match_count(ctx.db, ctx.request.id) >= cap:
+                    return json_result(ok=False, error="Open-match limit reached.")
+                if await open_match_count(ctx.db, candidate.id) >= cap:
+                    return json_result(
+                        ok=False,
+                        error="The other person already has too many open matches.",
+                    )
         else:
-            if await open_match_count(ctx.db, ctx.request.id) >= settings.MAX_OPEN_MATCHES_PER_REQUEST:
+            cap = settings.MAX_OPEN_MATCHES_PER_REQUEST
+            if await open_match_count(ctx.db, ctx.request.id) >= cap:
                 return json_result(
                     ok=False,
                     error="Open-match limit reached.",
+                )
+            if await open_match_count(ctx.db, candidate.id) >= cap:
+                return json_result(
+                    ok=False,
+                    error="The other person already has too many open matches.",
                 )
             match = AgentMatch(
                 source_request_id=ctx.request.id,
@@ -266,6 +296,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 payload={"candidate_id": candidate.id},
             )
             ctx.opened_match_ids.append(match.id)
+        adopt_focus_if_idle(ctx, match.id)
         logger.info(
             "open_match session=%s match_id=%s candidate_id=%s reused=%s",
             ctx.session.id,

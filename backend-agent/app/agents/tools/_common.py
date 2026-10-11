@@ -6,7 +6,7 @@ from typing import Any
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
 
-from app.agents.context import ToolContext
+from app.agents.context import ToolContext, focused_match_id
 from app.db.models import AgentMatch, AgentRequest
 from app.services.privacy import json_result
 from app.services.workflow import load_pair_requests, party_role
@@ -39,13 +39,26 @@ def make_tool(
     )
 
 
+def resolve_match_id(ctx: ToolContext, match_id: str | None) -> str:
+    resolved = (match_id or "").strip() or focused_match_id(ctx)
+    if not resolved:
+        raise ValueError("No match is in focus. Pass match_id or work from a match lane.")
+    return resolved
+
+
+def adopt_focus_if_idle(ctx: ToolContext, match_id: str) -> None:
+    """On the request lane, a just-opened pair becomes this turn's default match_id."""
+    if match_id and not focused_match_id(ctx):
+        ctx.focus_match_id = match_id
+
+
 async def owned_match(
     ctx: ToolContext,
-    match_id: str,
+    match_id: str | None = None,
 ) -> tuple[AgentMatch, AgentRequest, AgentRequest, AgentRequest]:
     if ctx.request is None:
         raise ValueError("No brief is saved for this session.")
-    match = await ctx.db.get(AgentMatch, match_id)
+    match = await ctx.db.get(AgentMatch, resolve_match_id(ctx, match_id))
     if match is None:
         raise ValueError("Match not found.")
     source, candidate = await load_pair_requests(ctx.db, match)

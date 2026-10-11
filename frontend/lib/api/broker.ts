@@ -1,3 +1,25 @@
+export type BrokerConnectOffer = {
+  id: string
+  match_id: string
+  prompt: string
+  status: string
+  created_at: string
+}
+
+export type BrokerMatchLane = {
+  id: string
+  status: string
+  close_reason: string | null
+  your_role: string
+  label: string
+  summary: string
+  last_activity_at: string
+  unread_count: number
+  waiting: boolean
+  connect_offer?: BrokerConnectOffer | null
+  connection_id?: string | null
+}
+
 export type BrokerSession = {
   id: string
   title: string
@@ -5,6 +27,9 @@ export type BrokerSession = {
   summary: string | null
   created_at: string
   updated_at: string
+  open_match_count?: number
+  match_unread_count?: number
+  matches?: BrokerMatchLane[]
 }
 
 export type BrokerAttachment = {
@@ -37,6 +62,7 @@ export type BrokerUploadRequest = {
 export type BrokerMessage = {
   id: string
   session_id: string
+  match_id?: string | null
   role: "assistant" | "user"
   content: string
   created_at: string
@@ -99,20 +125,14 @@ export type ConnectionDetail = {
   messages: ConnectionMessage[]
 }
 
-export type BrokerConnectOffer = {
-  id: string
-  match_id: string
-  prompt: string
-  status: string
-  created_at: string
-}
-
 export type BrokerSessionDetail = {
   session: BrokerSession
   messages: BrokerMessage[]
   attachments?: BrokerAttachment[]
   pending_upload_requests?: BrokerUploadRequest[]
   connect_offer?: BrokerConnectOffer | null
+  matches?: BrokerMatchLane[]
+  connect_offers?: BrokerConnectOffer[]
 }
 
 export function getBrokerBackendUrl() {
@@ -194,7 +214,8 @@ export function sendBrokerMessage(
   accessToken: string,
   sessionId: string,
   content: string,
-  attachmentIds: string[] = []
+  attachmentIds: string[] = [],
+  matchId?: string | null
 ) {
   return brokerFetch<BrokerMessage[]>(
     accessToken,
@@ -203,10 +224,17 @@ export function sendBrokerMessage(
       method: "POST",
       body: JSON.stringify({
         content,
-        attachment_ids: attachmentIds
+        attachment_ids: attachmentIds,
+        match_id: matchId || null
       })
     }
   )
+}
+
+export function markBrokerMatchRead(accessToken: string, matchId: string) {
+  return brokerFetch<void>(accessToken, `/broker/matches/${matchId}/read`, {
+    method: "POST"
+  })
 }
 
 export async function uploadBrokerAttachment(

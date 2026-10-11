@@ -1,6 +1,6 @@
 # BrokerAI — Project Context
 
-Last updated: 2026-09-14
+Last updated: 2026-10-07
 
 ## MVP Goal
 
@@ -39,7 +39,11 @@ user message
   → reply to the current user (and optionally a named party via message_party)
 ```
 
-One agent talks to every party. Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(to=source|candidate, context=intent)` queues a **separate** broker turn on the other party's session (`trigger=match_context`) after this request commits. It returns an ack only and does not wait for their reply. This session's bubble is the final reply. The other human's answer is a later `user_message` on their session. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
+One agent talks to every party. A request may have several live matches (`MAX_OPEN_MATCHES_PER_REQUEST`, default 3). Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus, `other_matches` = compact roster). `update_request` always patches the shared living brief, including from a match lane when this person adds a detail that applies beyond that pair. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
+
+Do not split this into intake vs mediation agents. The product is one broker with the full tool set on every turn. Parallelism already exists as fire-and-forget `match_context` turns on the other party's matching lane.
+
+Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(match_id, context)` queues a **separate** broker turn on the other party's **match lane** (`trigger=match_context`, `focus_match_id` set) after this request commits. It returns an ack only and does not wait for their reply. This lane's bubble is the final reply. The other human's answer is a later `user_message` on their session in that match lane. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
 
 `backend/` is the earlier graph prototype. It is not the active architecture.
 
@@ -64,9 +68,10 @@ FastAPI app with the same chat contract the Next.js client already uses.
 
 New tables so this service can share Postgres with the old folder without colliding:
 
-- `agent_sessions`, `agent_messages`
+- `agent_sessions`, `agent_messages` (`match_id` null = request lane, set = that match lane)
 - `agent_requests` — one living brief per session
 - `agent_matches` — a pair of briefs plus `notebook` (shared facts and outstanding question)
+- `agent_match_reads` — per-user last-read for match-lane unread badges
 - `agent_events` — append-only match audit
 - `agent_connections` — created when a party presses Connect; opens a direct 1:1 chat
 - `agent_connection_messages` / `agent_connection_attachments` — party-to-party chat and files
@@ -93,9 +98,9 @@ Statuses are intentionally short:
 - Match: `open` | `accepted` | `connected` | `closed` (`close_reason` is `skip`, `reject`, `withdraw`, `expired`, or `request_closed`)
 - Session: `open` | `closed`
 
-`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). `message_party` writes into the named party's chat (`source` or `candidate`); questions for the current user belong in the final reply.
+`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). Closing one pair leaves other open matches on the request. `message_party` writes into the other party's match lane for that pair; questions for the current user belong in the final reply of this lane.
 
-`waiting_match_id` on a request is attention (“we last asked this person about this match”). It does not route the next message to a different engine.
+`waiting_match_id` on a request is attention (“we last asked this person about this match”). It does not route the next message. The POST body `match_id` (and outreach `focus_match_id`) chooses the lane. Frontend match tabs send that id; the request tab omits it.
 
 ### Agent tools
 
@@ -107,7 +112,7 @@ Bound schemas describe what each tool does. The broker chooses among them.
 - `index_request` — make the brief searchable
 - `search_counterparties` / `search_again` — anonymized RAG candidates
 - `evaluate_pair` — screens one retrieved pair; recommendation is information for the broker
-- `open_match` — start working a pair (usually one open match at a time); seeds the match notebook
+- `open_match` — start working a pair (up to `MAX_OPEN_MATCHES_PER_REQUEST` on each side); seeds the match notebook
 - `message_party` — queue a later broker turn in `source` or `candidate` chat
 - `update_notebook` — shared terms plus agent_note/next_action for later turns
 - `skip_match` / `reject_match` — close a pair
@@ -119,7 +124,7 @@ Bound schemas describe what each tool does. The broker chooses among them.
 - `share_attachment` — deliver to the other party; personal items ask permission
 - `record_share_grant` — chat consent for a personal share
 
-Python still enforces: no matching yourself, no contacts before accept, identity redaction in cross-party text before accept, max one open match, skip-reopen only after a brief changes.
+Python still enforces: no matching yourself, no contacts before accept, identity redaction in cross-party text before accept, open-match cap per request (default 3, both sides), skip-reopen only after a brief changes. Match tools default `match_id` to the focused lane.
 
 ### LLM
 
@@ -139,7 +144,7 @@ Chroma persists under `backend-agent/data/chroma`, collection `agent_requests`. 
 
 ## Frontend
 
-The chat client talks to `/broker/sessions` and `/broker/sessions/{id}/messages`. Contact cards still use `kind: broker_contact_card` (name, email, location — **no phone number**) and Connect hits `/broker/matches/{id}/connect`, which creates `agent_connections` and opens a direct chat.
+The chat client talks to `/broker/sessions` and `/broker/sessions/{id}/messages` (`match_id` optional). Session GET/list include `matches[]` (label, status, unread, connect offer, connection id). `POST /broker/matches/{id}/read` clears a lane badge. Contact cards still use `kind: broker_contact_card` (name, email, location — **no phone number**) and Connect hits `/broker/matches/{id}/connect`, which creates `agent_connections` and opens a direct chat. The request view has a match-lane rail (request tab + one tab per pair); the UI does not auto-switch after `open_match`. Introduction offers render only on that match's tab; the request lane shows banners when another match is waiting, unread, or ready to introduce. Thinking and in-flight sends are per-lane.
 
 Direct party chat is a separate inbox from broker sessions:
 
@@ -194,6 +199,6 @@ In the production (and local-if-using-real-auth) project:
 
 ## Next
 
-- Frontend visibility for open matches
+- Exclusive-close policy on accept (housing vs parallel freelance) as a product rule, not the lane model
 - Multi-worker WebSocket fan-out (Redis) if we run more than one uvicorn worker
 - Multi-party deals beyond 1:1 pairs

@@ -7,10 +7,11 @@ import { parseAttachmentPermission } from "@/components/chat/attachment-cards"
 import { ChatComposer } from "@/components/chat/chat-composer"
 import { ChatHeader } from "@/components/chat/chat-header"
 import { ConnectionThread } from "@/components/chat/connection-thread"
+import { MatchLaneRail } from "@/components/chat/match-lane-rail"
 import { MessageList } from "@/components/chat/message-list"
 import { SessionSidebar } from "@/components/chat/session-sidebar"
 import {
-  type BrokerConnectOffer,
+  type BrokerMatchLane,
   type BrokerMessage,
   type BrokerSession,
   type BrokerSessionDetail,
@@ -25,6 +26,7 @@ import {
   grantBrokerAttachment,
   listBrokerConnections,
   listBrokerSessions,
+  markBrokerMatchRead,
   respondToIntroduction,
   sendBrokerMessage,
   sendConnectionMessage,
@@ -47,6 +49,7 @@ import {
   requestNotificationPermission
 } from "@/lib/push"
 import { patchNotifyEmail } from "@/lib/api/users"
+import { formatStatus } from "@/lib/chat-format"
 import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 
 type BrokerChatProps = {
@@ -107,8 +110,8 @@ export function BrokerChat({
   const [sessionLoading, setSessionLoading] = useState(false)
   const [connectionLoading, setConnectionLoading] = useState(false)
   const [creatingSession, setCreatingSession] = useState(false)
-  const [thinkingSessionId, setThinkingSessionId] = useState<string | null>(
-    null
+  const [thinkingLanes, setThinkingLanes] = useState<Record<string, number>>(
+    {}
   )
   const [sending, setSending] = useState(false)
   const [connectingMatchId, setConnectingMatchId] = useState<string | null>(
@@ -120,9 +123,8 @@ export function BrokerChat({
   const [uploadingRequestId, setUploadingRequestId] = useState<string | null>(
     null
   )
-  const [connectOffer, setConnectOffer] = useState<BrokerConnectOffer | null>(
-    null
-  )
+  const [matches, setMatches] = useState<BrokerMatchLane[]>([])
+  const [activeMatchId, setActiveMatchId] = useState<string | null>(null)
   const [introducingMatchId, setIntroducingMatchId] = useState<string | null>(
     null
   )
@@ -141,7 +143,21 @@ export function BrokerChat({
   const activeConnection = connections.find(
     (connection) => connection.id === activeConnectionId
   )
-  const visibleMessages = [...messages, ...pendingMessages]
+  const visibleMessages = [...messages, ...pendingMessages].filter(
+    (message) =>
+      sameLane(message.match_id, activeMatchId) &&
+      (message.session_id === activeSessionId ||
+        message.session_id === "local" ||
+        !activeSessionId)
+  )
+  const lanePending = pendingMessages.filter((message) =>
+    sameLane(message.match_id, activeMatchId)
+  )
+  const activeMatch = matches.find((match) => match.id === activeMatchId) ?? null
+  const laneConnectOffer = activeMatch?.connect_offer ?? null
+  const otherLaneAlerts = matches.filter(
+    (match) => match.id !== activeMatchId && laneAlert(match)
+  )
   const visibleConnectionMessages = [
     ...connectionMessages,
     ...pendingConnectionMessages
@@ -152,11 +168,14 @@ export function BrokerChat({
   )
   const viewingConnection = Boolean(activeConnectionId)
   const replyAlreadyVisible =
-    pendingMessages.length === 0 &&
+    lanePending.length === 0 &&
     visibleMessages.at(-1)?.role === "assistant"
+  const activeLaneKey = laneKey(activeSessionId, activeMatchId)
   const thinking =
-    Boolean(thinkingSessionId) &&
-    (thinkingSessionId === activeSessionId || activeSessionId === null) &&
+    Boolean(
+      thinkingLanes[activeLaneKey] ||
+        thinkingLanes[laneKey(NEW_SESSION_THINKING, activeMatchId)]
+    ) &&
     !viewingConnection &&
     !replyAlreadyVisible
   const composerLocked =
@@ -164,18 +183,13 @@ export function BrokerChat({
   const composerBusy = viewingConnection ? sending : thinking
   const activeSessionIdRef = useRef(activeSessionId)
   activeSessionIdRef.current = activeSessionId
+  const activeMatchIdRef = useRef(activeMatchId)
+  activeMatchIdRef.current = activeMatchId
   const activeConnectionIdRef = useRef(activeConnectionId)
   activeConnectionIdRef.current = activeConnectionId
   const thinkingTurnRef = useRef(0)
-
-  useEffect(() => {
-    messageEndRef.current?.scrollIntoView({ block: "end" })
-  }, [
-    visibleMessages.length,
-    visibleConnectionMessages.length,
-    thinking,
-    sending
-  ])
+  const thinkingLanesRef = useRef(thinkingLanes)
+  thinkingLanesRef.current = thinkingLanes
 
   useEffect(() => {
     const chatId = new URLSearchParams(window.location.search).get("chat")
@@ -235,6 +249,7 @@ export function BrokerChat({
         const params = new URLSearchParams(window.location.search)
         const chatId = params.get("chat")
         const sessionParam = params.get("session")
+        const matchParam = params.get("match")
         if (chatId && connectionList.some((item) => item.id === chatId)) {
           setActiveConnectionId(chatId)
           setConnectionLoading(true)
@@ -252,7 +267,15 @@ export function BrokerChat({
             return
           }
           setActiveSessionId(detail.session.id)
+          const lanes = detail.matches ?? detail.session.matches ?? []
+          if (matchParam && lanes.some((lane) => lane.id === matchParam)) {
+            setActiveMatchId(matchParam)
+            activeMatchIdRef.current = matchParam
+          }
           applySessionDetail(detail)
+          if (matchParam && lanes.some((lane) => lane.id === matchParam)) {
+            await markBrokerMatchRead(token, matchParam).catch(() => undefined)
+          }
           setPendingMessages([])
         } else {
           const detail = await ensureEmptyBrokerSession(token)
@@ -330,7 +353,10 @@ export function BrokerChat({
     const sessionId = activeSessionId
     let cancelled = false
     const timer = window.setInterval(() => {
-      if (thinkingSessionId === sessionId) return
+      const busy = Object.keys(thinkingLanesRef.current).some((key) =>
+        key.startsWith(`${sessionId}:`)
+      )
+      if (busy) return
       void getBrokerSession(accessToken, sessionId)
         .then((detail) => {
           if (cancelled) return
@@ -345,7 +371,7 @@ export function BrokerChat({
       cancelled = true
       window.clearInterval(timer)
     }
-  }, [accessToken, activeSessionId, viewingConnection, thinkingSessionId])
+  }, [accessToken, activeSessionId, viewingConnection])
 
   useEffect(() => {
     if (!pendingChatId || !accessToken) return
@@ -416,9 +442,21 @@ export function BrokerChat({
     const url = new URL(window.location.href)
     if (connectionId) {
       url.searchParams.set("chat", connectionId)
+      url.searchParams.delete("session")
+      url.searchParams.delete("match")
     } else {
       url.searchParams.delete("chat")
     }
+    window.history.replaceState(null, "", url.pathname + url.search)
+  }
+
+  function setSessionQuery(sessionId: string | null, matchId: string | null) {
+    const url = new URL(window.location.href)
+    url.searchParams.delete("chat")
+    if (sessionId) url.searchParams.set("session", sessionId)
+    else url.searchParams.delete("session")
+    if (matchId) url.searchParams.set("match", matchId)
+    else url.searchParams.delete("match")
     window.history.replaceState(null, "", url.pathname + url.search)
   }
 
@@ -426,12 +464,96 @@ export function BrokerChat({
     setMessages(
       hydrateMessagesWithAttachments(detail.messages, detail.attachments)
     )
-    setConnectOffer(detail.connect_offer ?? null)
+    const focus = activeMatchIdRef.current
+    const incoming = detail.matches ?? detail.session.matches ?? []
+    const focused = incoming.find((lane) => lane.id === focus)
+    if (focus && focused && focused.unread_count > 0 && accessToken) {
+      void markBrokerMatchRead(accessToken, focus).catch(() => undefined)
+    }
+    const lanes = zeroFocusedUnread(incoming, focus)
+    setMatches(lanes)
+    setSessions((current) =>
+      current.map((session) =>
+        session.id === detail.session.id
+          ? {
+              ...detail.session,
+              matches: lanes,
+              match_unread_count: matchUnreadTotal(lanes)
+            }
+          : session
+      )
+    )
+    if (focus && !lanes.some((lane) => lane.id === focus)) {
+      setActiveMatchId(null)
+      activeMatchIdRef.current = null
+    }
+  }
+
+  function dropPendingMessage(messageId: string) {
+    setPendingMessages((current) =>
+      current.filter((message) => message.id !== messageId)
+    )
+  }
+
+  function beginLaneThinking(
+    sessionId: string | null,
+    matchId: string | null,
+    turn: number
+  ) {
+    setThinkingLanes((current) => ({
+      ...current,
+      [laneKey(sessionId, matchId)]: turn
+    }))
+  }
+
+  function retargetLaneThinking(
+    fromSessionId: string,
+    toSessionId: string,
+    matchId: string | null,
+    turn: number
+  ) {
+    setThinkingLanes((current) => {
+      const next = { ...current }
+      const from = laneKey(fromSessionId, matchId)
+      if (next[from] === turn) delete next[from]
+      next[laneKey(toSessionId, matchId)] = turn
+      return next
+    })
+  }
+
+  function endLaneThinking(
+    sessionId: string | null,
+    matchId: string | null,
+    turn: number
+  ) {
+    const keys = [
+      laneKey(sessionId, matchId),
+      laneKey(NEW_SESSION_THINKING, matchId)
+    ]
+    setThinkingLanes((current) => {
+      const next = { ...current }
+      for (const key of keys) {
+        if (next[key] === turn) delete next[key]
+      }
+      return next
+    })
   }
 
   async function refreshSessions(token: string) {
     const sessionList = await listBrokerSessions(token)
-    setSessions(sessionList)
+    const focus = activeMatchIdRef.current
+    const sessionId = activeSessionIdRef.current
+    setSessions(
+      sessionList.map((session) => {
+        if (session.id !== sessionId) return session
+        const lanes = zeroFocusedUnread(session.matches ?? [], focus)
+        return {
+          ...session,
+          matches: lanes,
+          match_unread_count: matchUnreadTotal(lanes)
+        }
+      })
+    )
   }
 
   async function openConnection(token: string, connectionId: string) {
@@ -474,13 +596,15 @@ export function BrokerChat({
       setActiveSessionId(detail.session.id)
       activeSessionIdRef.current = detail.session.id
       setActiveConnectionId(null)
+      setActiveMatchId(null)
+      activeMatchIdRef.current = null
       applySessionDetail(detail)
       setPendingMessages([])
       setComposerValue("")
       setPendingFiles([])
       setPendingLink("")
       setDrawerOpen(false)
-      setChatQuery(null)
+      setSessionQuery(detail.session.id, null)
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -492,12 +616,8 @@ export function BrokerChat({
     }
   }
 
-  async function handleSelectSession(sessionId: string) {
+  async function openBrokerSession(sessionId: string, matchId: string | null) {
     if (!accessToken) {
-      setDrawerOpen(false)
-      return
-    }
-    if (sessionId === activeSessionId && !activeConnectionId) {
       setDrawerOpen(false)
       return
     }
@@ -507,19 +627,23 @@ export function BrokerChat({
     setActiveSessionId(sessionId)
     activeSessionIdRef.current = sessionId
     setActiveConnectionId(null)
+    setActiveMatchId(matchId)
+    activeMatchIdRef.current = matchId
     setMessages([])
-    setConnectOffer(null)
-    setPendingMessages([])
+    setMatches([])
     setComposerValue("")
     setPendingFiles([])
     setPendingLink("")
     setDrawerOpen(false)
-    setChatQuery(null)
+    setSessionQuery(sessionId, matchId)
     try {
       const detail = await getBrokerSession(accessToken, sessionId)
       if (activeSessionIdRef.current !== sessionId) return
       setActiveSessionId(detail.session.id)
       applySessionDetail(detail)
+      if (matchId) {
+        await markBrokerMatchRead(accessToken, matchId).catch(() => undefined)
+      }
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -529,6 +653,59 @@ export function BrokerChat({
     } finally {
       setSessionLoading(false)
     }
+  }
+
+  async function handleSelectSession(sessionId: string) {
+    if (!accessToken) {
+      setDrawerOpen(false)
+      return
+    }
+    if (sessionId === activeSessionId && !activeConnectionId) {
+      handleSelectRequestLane()
+      setDrawerOpen(false)
+      return
+    }
+    await openBrokerSession(sessionId, null)
+  }
+
+  async function handleSelectMatch(sessionId: string, matchId: string) {
+    if (!accessToken) return
+    if (sessionId !== activeSessionId || activeConnectionId) {
+      await openBrokerSession(sessionId, matchId)
+      return
+    }
+    setActiveMatchId(matchId)
+    activeMatchIdRef.current = matchId
+    setComposerValue("")
+    setPendingFiles([])
+    setPendingLink("")
+    setDrawerOpen(false)
+    setSessionQuery(sessionId, matchId)
+    setMatches((current) => {
+      const lanes = zeroFocusedUnread(current, matchId)
+      setSessions((sessions) =>
+        sessions.map((session) =>
+          session.id === sessionId
+            ? {
+                ...session,
+                matches: lanes,
+                match_unread_count: matchUnreadTotal(lanes)
+              }
+            : session
+        )
+      )
+      return lanes
+    })
+    await markBrokerMatchRead(accessToken, matchId).catch(() => undefined)
+  }
+
+  function handleSelectRequestLane() {
+    setActiveMatchId(null)
+    activeMatchIdRef.current = null
+    setComposerValue("")
+    setPendingFiles([])
+    setPendingLink("")
+    if (activeSessionId) setSessionQuery(activeSessionId, null)
   }
 
   async function handleSelectConnection(connectionId: string) {
@@ -569,15 +746,20 @@ export function BrokerChat({
       content,
       sessionId: activeSessionId
     })
+    const sentMatchId = activeMatchId
     const optimisticMessage = createLocalUserMessage(
       content,
       activeSessionId,
-      localAttachments
+      localAttachments,
+      sentMatchId
     )
-    setPendingMessages([optimisticMessage])
+    setPendingMessages((current) => [
+      ...current.filter((message) => message.id !== optimisticMessage.id),
+      optimisticMessage
+    ])
     let sessionId = activeSessionId
     const thinkingTurn = ++thinkingTurnRef.current
-    setThinkingSessionId(sessionId ?? NEW_SESSION_THINKING)
+    beginLaneThinking(sessionId, sentMatchId, thinkingTurn)
 
     try {
       if (!sessionId) {
@@ -592,16 +774,15 @@ export function BrokerChat({
         sessionId = detail.session.id
         setActiveSessionId(sessionId)
         activeSessionIdRef.current = sessionId
+        retargetLaneThinking(NEW_SESSION_THINKING, sessionId, sentMatchId, thinkingTurn)
         if (!files.length && !link) {
           if (activeSessionIdRef.current === sessionId) {
             setMessages(
               hydrateMessagesWithAttachments(detail.messages, detail.attachments)
             )
-            setPendingMessages([])
-            if (thinkingTurnRef.current === thinkingTurn) {
-              setThinkingSessionId(null)
-            }
           }
+          dropPendingMessage(optimisticMessage.id)
+          endLaneThinking(sessionId, sentMatchId, thinkingTurn)
           return
         }
         if (detail.messages.length && activeSessionIdRef.current === sessionId) {
@@ -610,8 +791,6 @@ export function BrokerChat({
           )
         }
       }
-      setThinkingSessionId(sessionId)
-
       const attachmentIds: string[] = []
       for (const file of files) {
         const uploaded = await uploadBrokerAttachment(
@@ -632,7 +811,7 @@ export function BrokerChat({
       }
 
       if (!content && !attachmentIds.length) {
-        setPendingMessages([])
+        dropPendingMessage(optimisticMessage.id)
         return
       }
 
@@ -640,7 +819,8 @@ export function BrokerChat({
         accessToken,
         sessionId,
         content,
-        attachmentIds
+        attachmentIds,
+        sentMatchId
       )
       if (activeSessionIdRef.current === sessionId) {
         setMessages((currentMessages) => {
@@ -655,33 +835,36 @@ export function BrokerChat({
               }))
           ])
         })
-        setPendingMessages([])
-        if (thinkingTurnRef.current === thinkingTurn) {
-          setThinkingSessionId(null)
-        }
+      }
+      dropPendingMessage(optimisticMessage.id)
+      endLaneThinking(sessionId, sentMatchId, thinkingTurn)
+      if (sentMatchId) {
+        await markBrokerMatchRead(accessToken, sentMatchId).catch(() => undefined)
       }
       await refreshSessions(accessToken)
       if (activeSessionIdRef.current === sessionId) {
         const detail = await getBrokerSession(accessToken, sessionId)
         if (activeSessionIdRef.current === sessionId) {
           applySessionDetail(detail)
-          setPendingMessages([])
         }
       }
     } catch (caughtError) {
-      setComposerValue(content)
-      setPendingFiles(files)
-      setPendingLink(link)
-      setPendingMessages([])
+      if (
+        activeSessionIdRef.current === sessionId &&
+        sameLane(activeMatchIdRef.current, sentMatchId)
+      ) {
+        setComposerValue(content)
+        setPendingFiles(files)
+        setPendingLink(link)
+      }
+      dropPendingMessage(optimisticMessage.id)
       setError(
         caughtError instanceof Error
           ? caughtError.message
           : "Could not send your message."
       )
     } finally {
-      if (thinkingTurnRef.current === thinkingTurn) {
-        setThinkingSessionId(null)
-      }
+      endLaneThinking(sessionId, sentMatchId, thinkingTurn)
     }
   }
 
@@ -767,7 +950,9 @@ export function BrokerChat({
     setError(null)
     setUploadingRequestId(requestId)
     const localAttachments = filesToLocalAttachments([file], sessionId)
+    const sentMatchId = activeMatchIdRef.current
     let thinkingTurn: number | null = null
+    let optimisticId: string | null = null
     try {
       const uploaded = await uploadBrokerAttachment(
         accessToken,
@@ -777,15 +962,24 @@ export function BrokerChat({
       )
       setUploadingRequestId(null)
       thinkingTurn = ++thinkingTurnRef.current
-      setThinkingSessionId(sessionId)
-      setPendingMessages([
-        createLocalUserMessage("", sessionId, localAttachments)
+      beginLaneThinking(sessionId, sentMatchId, thinkingTurn)
+      const optimisticMessage = createLocalUserMessage(
+        "",
+        sessionId,
+        localAttachments,
+        sentMatchId
+      )
+      optimisticId = optimisticMessage.id
+      setPendingMessages((current) => [
+        ...current.filter((message) => message.id !== optimisticMessage.id),
+        optimisticMessage
       ])
       const newMessages = await sendBrokerMessage(
         accessToken,
         sessionId,
         "",
-        [uploaded.id]
+        [uploaded.id],
+        sentMatchId
       )
       if (activeSessionIdRef.current === sessionId) {
         setMessages((currentMessages) => {
@@ -800,14 +994,12 @@ export function BrokerChat({
               }))
           ])
         })
-        setPendingMessages([])
-        if (thinkingTurn !== null && thinkingTurnRef.current === thinkingTurn) {
-          setThinkingSessionId(null)
-        }
       }
+      dropPendingMessage(optimisticMessage.id)
+      endLaneThinking(sessionId, sentMatchId, thinkingTurn)
       await refreshSessions(accessToken)
     } catch (caughtError) {
-      setPendingMessages([])
+      if (optimisticId) dropPendingMessage(optimisticId)
       setError(
         caughtError instanceof Error
           ? caughtError.message
@@ -815,8 +1007,8 @@ export function BrokerChat({
       )
     } finally {
       setUploadingRequestId(null)
-      if (thinkingTurn !== null && thinkingTurnRef.current === thinkingTurn) {
-        setThinkingSessionId(null)
+      if (thinkingTurn !== null) {
+        endLaneThinking(sessionId, sentMatchId, thinkingTurn)
       }
     }
   }
@@ -883,6 +1075,8 @@ export function BrokerChat({
       setSessions(remaining)
 
       if (activeSessionIdRef.current === sessionId && !activeConnectionIdRef.current) {
+        setActiveMatchId(null)
+        activeMatchIdRef.current = null
         if (remaining.length > 0) {
           setSessionLoading(true)
           const nextId = remaining[0].id
@@ -891,7 +1085,7 @@ export function BrokerChat({
           setActiveSessionId(detail.session.id)
           activeSessionIdRef.current = detail.session.id
           applySessionDetail(detail)
-          setPendingMessages([])
+          setSessionQuery(detail.session.id, null)
         } else {
           const detail = await ensureEmptyBrokerSession(accessToken)
           if (
@@ -905,7 +1099,7 @@ export function BrokerChat({
           setActiveSessionId(detail.session.id)
           activeSessionIdRef.current = detail.session.id
           applySessionDetail(detail)
-          setPendingMessages([])
+          setSessionQuery(detail.session.id, null)
         }
       }
     } catch (caughtError) {
@@ -932,7 +1126,6 @@ export function BrokerChat({
       const detail = await respondToIntroduction(accessToken, matchId, action)
       if (!sessionId || activeSessionIdRef.current !== sessionId) return
       applySessionDetail(detail)
-      setPendingMessages([])
     } catch (caughtError) {
       setError(
         caughtError instanceof Error
@@ -980,12 +1173,32 @@ export function BrokerChat({
     void openConnection(accessToken, connection.id)
   }
 
+  const liveMatchCount = matches.filter(
+    (match) => match.status !== "closed"
+  ).length
+  const requestBusy = Boolean(
+    thinkingLanes[laneKey(activeSessionId, null)] ||
+      thinkingLanes[laneKey(NEW_SESSION_THINKING, null)]
+  )
+  const busyMatchIds = matches
+    .filter((match) => thinkingLanes[laneKey(activeSessionId, match.id)])
+    .map((match) => match.id)
+  const laneConnectionId =
+    activeMatch?.connection_id ||
+    connections.find((item) => item.match_id === activeMatch?.id)?.id ||
+    null
   const headerTitle = viewingConnection
     ? activeConnection?.peer.name ?? "Chat"
-    : (activeSession?.title ?? "New request")
+    : activeMatch
+      ? activeMatch.label
+      : (activeSession?.title ?? "New request")
   const headerStatus = viewingConnection
     ? activeConnection?.peer.request_title || "Direct chat"
-    : (activeSession?.status ?? "intake")
+    : activeMatch
+      ? `${formatLaneStatus(activeMatch)} · ${activeSession?.title ?? "Request"}`
+      : liveMatchCount
+        ? `${liveMatchCount} match${liveMatchCount === 1 ? "" : "es"} in progress`
+        : (activeSession?.status ?? "intake")
 
   return (
     <main className="flex h-screen overflow-hidden bg-canvas text-ink">
@@ -995,11 +1208,15 @@ export function BrokerChat({
         sessions={sessions}
         connections={connections}
         activeSessionId={activeSessionId}
+        activeMatchId={activeMatchId}
         activeConnectionId={activeConnectionId}
         creatingSession={creatingSession}
         deletingSessionId={deletingSessionId}
         onCreateSession={() => void handleCreateSession()}
         onSelectSession={(sessionId) => void handleSelectSession(sessionId)}
+        onSelectMatch={(sessionId, matchId) =>
+          void handleSelectMatch(sessionId, matchId)
+        }
         onSelectConnection={(connectionId) =>
           void handleSelectConnection(connectionId)
         }
@@ -1023,7 +1240,32 @@ export function BrokerChat({
           title={headerTitle}
           status={headerStatus}
           onOpenSessions={() => setDrawerOpen(true)}
+          action={
+            laneConnectionId && activeMatch ? (
+              <button
+                type="button"
+                onClick={() => handleOpenChat(activeMatch.id)}
+                className="h-9 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-[#0c4d48]"
+              >
+                Open chat
+              </button>
+            ) : null
+          }
         />
+
+        {!viewingConnection ? (
+          <MatchLaneRail
+            requestTitle={activeSession?.title ?? "Your request"}
+            matches={matches}
+            activeMatchId={activeMatchId}
+            requestBusy={requestBusy}
+            busyMatchIds={busyMatchIds}
+            onSelectRequest={handleSelectRequestLane}
+            onSelectMatch={(matchId) => {
+              if (activeSessionId) void handleSelectMatch(activeSessionId, matchId)
+            }}
+          />
+        ) : null}
 
         {showNotifyPrompt ? (
           <div className="flex shrink-0 items-center justify-between gap-3 border-b border-line bg-accent-soft px-4 py-2.5 sm:px-6">
@@ -1066,6 +1308,8 @@ export function BrokerChat({
             sessionLoading={sessionLoading}
             thinking={thinking}
             error={error}
+            emptyTitle={activeMatch ? matchEmptyTitle(activeMatch) : undefined}
+            emptyDetail={activeMatch ? matchEmptyDetail(activeMatch) : undefined}
             actions={{
               accessToken,
               connectingMatchId,
@@ -1083,28 +1327,61 @@ export function BrokerChat({
           />
         )}
 
-        {!viewingConnection && connectOffer ? (
+        {!viewingConnection && !activeMatch && otherLaneAlerts.length > 0 ? (
+          <div className="mx-auto w-full max-w-2xl shrink-0 px-4 sm:px-6">
+            <div className="mb-2 space-y-2">
+              {otherLaneAlerts.map((match) => {
+                const alert = laneAlert(match)
+                if (!alert) return null
+                return (
+                  <button
+                    key={match.id}
+                    type="button"
+                    onClick={() => {
+                      if (activeSessionId) void handleSelectMatch(activeSessionId, match.id)
+                    }}
+                    className="flex w-full items-center justify-between gap-3 rounded-2xl border border-line bg-accent-soft px-4 py-3 text-left"
+                  >
+                    <span className="min-w-0">
+                      <span className="block truncate text-sm font-medium text-ink">
+                        {alert.title}
+                      </span>
+                      <span className="mt-0.5 block truncate text-xs text-muted">
+                        {alert.detail}
+                      </span>
+                    </span>
+                    <span className="shrink-0 text-xs font-semibold text-accent">
+                      Open
+                    </span>
+                  </button>
+                )
+              })}
+            </div>
+          </div>
+        ) : null}
+
+        {!viewingConnection && laneConnectOffer ? (
           <div className="mx-auto w-full max-w-2xl shrink-0 px-4 sm:px-6">
             <div className="mb-2 rounded-2xl border border-line bg-accent-soft px-4 py-3">
-              <p className="text-sm leading-6 text-ink">{connectOffer.prompt}</p>
+              <p className="text-sm leading-6 text-ink">{laneConnectOffer.prompt}</p>
               <div className="mt-3 flex gap-2">
                 <button
                   type="button"
-                  disabled={introducingMatchId === connectOffer.match_id}
+                  disabled={introducingMatchId === laneConnectOffer.match_id}
                   onClick={() =>
-                    void handleIntroduction(connectOffer.match_id, "accept")
+                    void handleIntroduction(laneConnectOffer.match_id, "accept")
                   }
                   className="h-9 flex-1 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
                 >
-                  {introducingMatchId === connectOffer.match_id
+                  {introducingMatchId === laneConnectOffer.match_id
                     ? "Working…"
                     : "Introduce us"}
                 </button>
                 <button
                   type="button"
-                  disabled={introducingMatchId === connectOffer.match_id}
+                  disabled={introducingMatchId === laneConnectOffer.match_id}
                   onClick={() =>
-                    void handleIntroduction(connectOffer.match_id, "dismiss")
+                    void handleIntroduction(laneConnectOffer.match_id, "dismiss")
                   }
                   className="h-9 rounded-xl px-3 text-xs font-medium text-muted transition hover:text-ink disabled:opacity-50"
                 >
@@ -1129,7 +1406,11 @@ export function BrokerChat({
             placeholder={
               viewingConnection
                 ? `Message ${activeConnection?.peer.name ?? "them"}…`
-                : "Describe what you need, or attach a file…"
+                : activeMatch?.status === "closed"
+                  ? "This match is closed. You can still ask the broker about it…"
+                  : activeMatch
+                    ? `Talk with the broker about ${activeMatch.label}…`
+                    : "Describe what you need, or attach a file…"
             }
             showLink={!viewingConnection}
           />
@@ -1139,14 +1420,89 @@ export function BrokerChat({
   )
 }
 
+function formatLaneStatus(match: BrokerMatchLane) {
+  if (match.status === "connected") return "Connected"
+  if (match.status === "accepted") return "Ready to connect"
+  if (match.status === "closed") return "Closed"
+  if (match.waiting) return "Waiting on you"
+  return "In progress"
+}
+
+function sameLane(left: string | null | undefined, right: string | null | undefined) {
+  return (left || null) === (right || null)
+}
+
+function laneKey(
+  sessionId: string | null | undefined,
+  matchId: string | null | undefined
+) {
+  return `${sessionId ?? NEW_SESSION_THINKING}:${matchId || "request"}`
+}
+
+function zeroFocusedUnread(lanes: BrokerMatchLane[], focus: string | null) {
+  return lanes.map((lane) =>
+    focus && lane.id === focus ? { ...lane, unread_count: 0 } : lane
+  )
+}
+
+function matchUnreadTotal(lanes: BrokerMatchLane[]) {
+  return lanes.reduce((sum, lane) => sum + lane.unread_count, 0)
+}
+
+function laneAlert(match: BrokerMatchLane) {
+  if (match.connect_offer) {
+    return {
+      title: `${match.label} is ready to be introduced`,
+      detail: "Open that match to continue."
+    }
+  }
+  if (match.waiting) {
+    return {
+      title: `The broker needs you on ${match.label}`,
+      detail: "Open that match to reply."
+    }
+  }
+  if (match.unread_count > 0) {
+    return {
+      title: `There's an update on ${match.label}`,
+      detail: "Open that match to read it."
+    }
+  }
+  return null
+}
+
+function matchEmptyTitle(match: BrokerMatchLane) {
+  if (match.status === "closed") {
+    return match.close_reason
+      ? `This match is closed (${formatStatus(match.close_reason)}).`
+      : "This match is closed."
+  }
+  if (match.status === "connected") {
+    return `You're connected. This broker thread is still about ${match.label}.`
+  }
+  return `This is your private conversation with the broker about ${match.label}.`
+}
+
+function matchEmptyDetail(match: BrokerMatchLane) {
+  if (match.status === "closed") {
+    return "You can still ask the broker what happened. Other matches on this request stay open."
+  }
+  if (match.status === "connected") {
+    return "Open chat to talk to them directly, or keep using this thread with the broker."
+  }
+  return "Ask questions, share files, or wait for an update. This thread stays separate from your other matches."
+}
+
 function createLocalUserMessage(
   content: string,
   sessionId: string | null,
-  attachments: BrokerMessage["attachments"] = []
+  attachments: BrokerMessage["attachments"] = [],
+  matchId: string | null = null
 ): BrokerMessage {
   return {
     id: `local-user-${Date.now()}`,
     session_id: sessionId ?? "local",
+    match_id: matchId,
     role: "user",
     content,
     created_at: new Date().toISOString(),

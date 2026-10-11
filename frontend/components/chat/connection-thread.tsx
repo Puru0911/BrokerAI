@@ -1,6 +1,6 @@
 "use client"
 
-import type { RefObject } from "react"
+import { useLayoutEffect, useRef, type RefObject } from "react"
 
 import { AttachmentStack } from "@/components/chat/attachment-cards"
 import { ThreadSkeleton } from "@/components/chat/thread-skeleton"
@@ -22,8 +22,20 @@ export function ConnectionThread({
   accessToken: string | null
   endRef: RefObject<HTMLDivElement | null>
 }) {
+  const scrollerRef = useRef<HTMLDivElement>(null)
+  const lastMessageId = messages.at(-1)?.id
+
+  useLayoutEffect(() => {
+    const el = scrollerRef.current
+    if (!el) return
+    el.scrollTop = el.scrollHeight
+  }, [messages.length, lastMessageId, loading])
+
   return (
-    <div className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6">
+    <div
+      ref={scrollerRef}
+      className="scrollbar-thin min-h-0 flex-1 overflow-y-auto px-4 py-6 sm:px-6"
+    >
       <div className="mx-auto flex min-h-full max-w-2xl flex-col gap-4">
         {error ? (
           <div className="rounded-2xl border border-danger/20 bg-danger-soft px-4 py-3 text-sm text-danger">

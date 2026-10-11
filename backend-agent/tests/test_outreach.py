@@ -13,6 +13,8 @@ def test_match_context_instruction_is_for_this_chat() -> None:
     assert "message_party" in text.lower()
     assert "this person" in text.lower()
     assert "outreach_context" in text.lower()
+    assert "match lane" in text.lower()
+    assert "focus_match_id" in text.lower()
 
 
 def test_schedule_outreach_does_not_run_the_turn_inline() -> None:

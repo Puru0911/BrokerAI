@@ -4,9 +4,9 @@ import { BrandMark } from "@/components/brand/mark"
 import { StatusPill } from "@/components/chat/chat-header"
 import { IconLogout, IconPlus, IconTrash, Spinner } from "@/components/icons"
 import { Button } from "@/components/ui/button"
-import { connectionPreview, formatSessionTime } from "@/lib/chat-format"
+import { connectionPreview, formatSessionTime, formatStatus } from "@/lib/chat-format"
 import { cn } from "@/lib/cn"
-import type { BrokerSession, ConnectionSummary } from "@/lib/api/broker"
+import type { BrokerMatchLane, BrokerSession, ConnectionSummary } from "@/lib/api/broker"
 
 export function SessionSidebar({
   open,
@@ -14,11 +14,13 @@ export function SessionSidebar({
   sessions,
   connections,
   activeSessionId,
+  activeMatchId,
   activeConnectionId,
   creatingSession,
   deletingSessionId,
   onCreateSession,
   onSelectSession,
+  onSelectMatch,
   onSelectConnection,
   onDeleteSession,
   emailNotify,
@@ -31,11 +33,13 @@ export function SessionSidebar({
   sessions: BrokerSession[]
   connections: ConnectionSummary[]
   activeSessionId: string | null
+  activeMatchId: string | null
   activeConnectionId: string | null
   creatingSession: boolean
   deletingSessionId: string | null
   onCreateSession: () => void
   onSelectSession: (sessionId: string) => void
+  onSelectMatch: (sessionId: string, matchId: string) => void
   onSelectConnection: (connectionId: string) => void
   onDeleteSession: (sessionId: string) => void
   emailNotify: boolean
@@ -141,15 +145,22 @@ export function SessionSidebar({
               </p>
             ) : (
               sessions.map((session) => {
+                const lanes = session.matches ?? []
+                const liveLanes = lanes.filter((match) => match.status !== "closed")
                 const isActive =
                   session.id === activeSessionId && !activeConnectionId
+                const unread = session.match_unread_count ?? 0
 
                 return (
                   <div
                     key={session.id}
                     className={cn(
                       "group relative rounded-xl px-3 py-2.5 transition",
-                      isActive ? "bg-accent-soft" : "hover:bg-canvas"
+                      isActive && !activeMatchId
+                        ? "bg-accent-soft"
+                        : isActive
+                          ? "bg-canvas"
+                          : "hover:bg-canvas"
                     )}
                   >
                     <button
@@ -160,8 +171,15 @@ export function SessionSidebar({
                         <span className="min-w-0 truncate text-sm font-medium text-ink">
                           {session.title}
                         </span>
-                        <span className="shrink-0 font-sans text-[11px] tabular-nums text-muted">
-                          {formatSessionTime(session.updated_at)}
+                        <span className="flex shrink-0 items-center gap-1.5">
+                          {unread > 0 ? (
+                            <span className="flex h-5 min-w-5 items-center justify-center rounded-full bg-accent px-1.5 text-[10px] font-semibold text-surface">
+                              {unread > 9 ? "9+" : unread}
+                            </span>
+                          ) : null}
+                          <span className="font-sans text-[11px] tabular-nums text-muted">
+                            {formatSessionTime(session.updated_at)}
+                          </span>
                         </span>
                       </div>
                       <div className="mt-0.5 line-clamp-1 pr-8 text-xs text-muted">
@@ -169,7 +187,13 @@ export function SessionSidebar({
                       </div>
                     </button>
                     <div className="mt-2 flex items-center justify-between gap-2">
-                      <StatusPill status={session.status} />
+                      <StatusPill
+                        status={
+                          liveLanes.length
+                            ? `${liveLanes.length} match${liveLanes.length === 1 ? "" : "es"}`
+                            : session.status
+                        }
+                      />
                       <button
                         type="button"
                         aria-label={`Delete ${session.title}`}
@@ -187,6 +211,20 @@ export function SessionSidebar({
                         )}
                       </button>
                     </div>
+                    {lanes.length > 0 ? (
+                      <div className="mt-2 space-y-0.5 border-t border-line/70 pt-2">
+                        {lanes.map((match) => (
+                          <SidebarMatchRow
+                            key={match.id}
+                            match={match}
+                            active={
+                              isActive && activeMatchId === match.id
+                            }
+                            onSelect={() => onSelectMatch(session.id, match.id)}
+                          />
+                        ))}
+                      </div>
+                    ) : null}
                   </div>
                 )
               })
@@ -226,6 +264,57 @@ export function SessionSidebar({
         </form>
       </div>
     </aside>
+  )
+}
+
+function SidebarMatchRow({
+  match,
+  active,
+  onSelect
+}: {
+  match: BrokerMatchLane
+  active: boolean
+  onSelect: () => void
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className={cn(
+        "flex w-full items-start gap-2 rounded-lg px-2 py-1.5 text-left transition",
+        active ? "bg-surface" : "hover:bg-surface/80"
+      )}
+    >
+      <span
+        className={cn(
+          "mt-1.5 h-1.5 w-1.5 shrink-0 rounded-full",
+          match.status === "closed"
+            ? "bg-muted"
+            : match.status === "connected" || match.status === "accepted"
+              ? "bg-accent"
+              : "bg-accent/60"
+        )}
+      />
+      <span className="min-w-0 flex-1 overflow-hidden">
+        <span className="flex min-w-0 items-center justify-between gap-2">
+          <span className="min-w-0 truncate text-xs font-medium text-ink">
+            {match.label}
+          </span>
+          {match.unread_count > 0 ? (
+            <span className="flex h-4 min-w-4 items-center justify-center rounded-full bg-accent px-1 text-[9px] font-semibold text-surface">
+              {match.unread_count > 9 ? "9+" : match.unread_count}
+            </span>
+          ) : null}
+        </span>
+        <span className="mt-0.5 block truncate text-[11px] text-muted">
+          {match.waiting
+            ? "Waiting on you"
+            : match.status === "connected"
+              ? "Connected"
+              : match.summary || formatStatus(match.status)}
+        </span>
+      </span>
+    </button>
   )
 }
 

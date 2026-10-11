@@ -22,6 +22,8 @@ from app.services.attachments import (
     ingest_urls_from_text,
     upload_notice,
 )
+from app.db.models.broker import utc_now
+from app.services.match_lanes import require_request_match
 from app.services.titles import WELCOME_MESSAGE, create_title
 from app.services.workflow import (
     MATCH_OPEN,
@@ -117,12 +119,21 @@ async def handle_session_message(
     session: AgentSession,
     content: str,
     attachment_ids: list[str] | None = None,
+    match_id: str | None = None,
 ) -> SessionTurnResult:
     request = await get_session_request(db, session.id)
+    lane = await require_request_match(db, request, match_id)
+    lane_id = lane.id if lane is not None else None
     linked_ids = list(dict.fromkeys(attachment_ids or []))
-    user_message = AgentMessage(session_id=session.id, role="user", content=content.strip())
+    user_message = AgentMessage(
+        session_id=session.id,
+        role="user",
+        content=content.strip(),
+        match_id=lane_id,
+    )
     db.add(user_message)
     await db.flush()
+    session.updated_at = utc_now()
 
     new_attachment_ids: list[str] = []
     if linked_ids:
@@ -158,6 +169,7 @@ async def handle_session_message(
         request=request,
         user_message=user_message,
         trigger="user_message",
+        focus_match_id=lane_id,
         new_attachment_ids=new_attachment_ids,
     )
     logger.info(
@@ -215,6 +227,7 @@ async def process_stale_matches(
                 user_message=None,
                 trigger="match_timeout",
                 trigger_match_id=match.id,
+                focus_match_id=match.id,
             )
             await run_broker_turn(ctx)
             outreach.extend(ctx.queued_outreach)
@@ -243,6 +256,7 @@ async def _run_turn_safely(ctx: ToolContext) -> list[AgentMessage]:
             "I hit a problem continuing this request. Please try that last "
             "message again in a moment."
         ),
+        match_id=ctx.focus_match_id or ctx.trigger_match_id,
     )
     ctx.db.add(fallback)
     await ctx.db.flush()

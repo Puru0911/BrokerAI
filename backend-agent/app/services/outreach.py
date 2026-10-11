@@ -71,6 +71,7 @@ async def run_match_context_turn(db: AsyncSession, job: OutreachJob) -> list[Mai
         user_message=None,
         trigger="match_context",
         trigger_match_id=match.id,
+        focus_match_id=match.id,
         outreach_context=job.context,
     )
     logger.info(

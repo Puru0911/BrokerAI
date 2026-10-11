@@ -54,7 +54,7 @@ class Settings(BaseSettings):
     # full = production copy. small / compressed / compact = shorter tool and helper prompts.
     AGENT_PROMPT_SIZE: str = "full"
     MATCH_TIMEOUT_HOURS: int = 48
-    MAX_OPEN_MATCHES_PER_REQUEST: int = 1
+    MAX_OPEN_MATCHES_PER_REQUEST: int = 3
 
     LOG_LEVEL: str = "DEBUG"
     LOG_FILE: str = "logs/brokerai.log"

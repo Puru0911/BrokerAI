@@ -13,6 +13,7 @@ from app.services.attachments import (
     shared_attachment_ids_for_match,
 )
 from app.services.living_request import living_request_from_model, redacted_living_request
+from app.services.match_lanes import roster_entry
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_CONNECTED,
@@ -66,6 +67,7 @@ class ToolContext:
     user_message: AgentMessage | None
     trigger: Trigger
     trigger_match_id: str | None = None
+    focus_match_id: str | None = None
     outreach_context: str | None = None
     current_user_messages: list[AgentMessage] = field(default_factory=list)
     saved_this_turn: bool = False
@@ -89,13 +91,19 @@ def _event_snapshot(event) -> dict[str, Any]:
     }
 
 
+def focused_match_id(ctx: ToolContext) -> str | None:
+    return ctx.focus_match_id or ctx.trigger_match_id
+
+
 async def resolve_session_role(ctx: ToolContext) -> SessionRole:
     if ctx.request is None:
         return "source"
-    if ctx.request.waiting_match_id:
-        match = await ctx.db.get(AgentMatch, ctx.request.waiting_match_id)
-        if match is not None and ctx.request.id == match.candidate_request_id:
-            return "counterparty"
+    match_id = focused_match_id(ctx)
+    if not match_id:
+        return "source"
+    match = await ctx.db.get(AgentMatch, match_id)
+    if match is not None and ctx.request.id == match.candidate_request_id:
+        return "counterparty"
     return "source"
 
 
@@ -103,19 +111,29 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
     role = await resolve_session_role(ctx)
     living = living_request_from_model(ctx.request)
     open_matches: list[dict[str, Any]] = []
+    other_matches: list[dict[str, Any]] = []
     recent_events: list[dict[str, Any]] = []
     attention = "idle"
+    focus_id = focused_match_id(ctx)
+    lane = "match" if focus_id else "request"
 
     if ctx.request is not None:
-        matches = await list_matches_for_request(ctx.db, ctx.request.id, limit=8)
+        matches = await list_matches_for_request(ctx.db, ctx.request.id, limit=20)
         for match in matches:
             snapshot = await _match_snapshot(ctx, match)
-            if match.status == MATCH_OPEN:
+            events = snapshot.get("last_events") or []
+            if focus_id and match.id == focus_id:
                 open_matches.append(snapshot)
-            recent_events.extend(snapshot.get("last_events") or [])
+                recent_events.extend(events)
+            elif match.status in {MATCH_OPEN, MATCH_ACCEPTED, MATCH_CONNECTED}:
+                other_matches.append(roster_entry(snapshot))
+                if not focus_id:
+                    recent_events.extend(events[-3:])
         recent_events.sort(key=lambda item: item.get("created_at") or "")
         recent_events = recent_events[-12:]
-        if ctx.request.waiting_match_id:
+        if focus_id:
+            attention = f"focused on match {focus_id}"
+        elif ctx.request.waiting_match_id:
             attention = f"waiting on reply for match {ctx.request.waiting_match_id}"
 
     user_text = ctx.user_message.content if ctx.user_message else None
@@ -127,8 +145,11 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
     return {
         "SESSION_ROLE": role,
         "TRIGGER": ctx.trigger,
+        "LANE": lane,
+        "focus_match_id": focus_id,
         "living_request": living,
         "open_matches": open_matches,
+        "other_matches": other_matches,
         "recent_events": recent_events,
         "attention_pointer": attention,
         "current_user_message": user_text,
@@ -194,17 +215,20 @@ async def load_session_history(
     session_id: str,
     *,
     exclude_message_id: str | None = None,
+    match_id: str | None = None,
     limit: int = 20,
 ) -> list[AgentMessage]:
-    result = await db.execute(
-        select(AgentMessage)
-        .where(AgentMessage.session_id == session_id)
-        .order_by(
-            AgentMessage.created_at,
-            AgentMessage.role.desc(),
-            AgentMessage.id,
-        )
+    stmt = select(AgentMessage).where(AgentMessage.session_id == session_id)
+    if match_id:
+        stmt = stmt.where(AgentMessage.match_id == match_id)
+    else:
+        stmt = stmt.where(AgentMessage.match_id.is_(None))
+    stmt = stmt.order_by(
+        AgentMessage.created_at,
+        AgentMessage.role.desc(),
+        AgentMessage.id,
     )
+    result = await db.execute(stmt)
     messages = [
         message
         for message in result.scalars().all()

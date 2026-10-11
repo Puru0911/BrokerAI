@@ -167,6 +167,7 @@ def _contact_card_message(
         session_id=session_id,
         role="assistant",
         content=json.dumps(payload, ensure_ascii=False),
+        match_id=match_id,
     )
 
 

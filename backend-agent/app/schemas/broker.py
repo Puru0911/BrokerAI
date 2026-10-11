@@ -13,6 +13,10 @@ class BrokerSessionCreate(BaseModel):
 class BrokerMessageCreate(BaseModel):
     content: str = Field(default="", max_length=4000)
     attachment_ids: list[str] = Field(default_factory=list)
+    match_id: str | None = Field(
+        default=None,
+        description="Match lane to post in. Omit for the request / brief lane.",
+    )
 
     @model_validator(mode="after")
     def require_text_or_attachments(self) -> BrokerMessageCreate:
@@ -95,6 +99,30 @@ class BrokerAttachmentRequestRead(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class BrokerConnectOfferRead(BaseModel):
+    id: str
+    match_id: str
+    prompt: str
+    status: str
+    created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class BrokerMatchLaneRead(BaseModel):
+    id: str
+    status: str
+    close_reason: str | None = None
+    your_role: str
+    label: str
+    summary: str
+    last_activity_at: datetime
+    unread_count: int = 0
+    waiting: bool = False
+    connect_offer: BrokerConnectOfferRead | None = None
+    connection_id: str | None = None
+
+
 class BrokerSessionRead(BaseModel):
     id: str
     title: str
@@ -102,6 +130,9 @@ class BrokerSessionRead(BaseModel):
     summary: str | None
     created_at: datetime
     updated_at: datetime
+    open_match_count: int = 0
+    match_unread_count: int = 0
+    matches: list[BrokerMatchLaneRead] = Field(default_factory=list)
 
     model_config = {"from_attributes": True}
 
@@ -109,6 +140,7 @@ class BrokerSessionRead(BaseModel):
 class BrokerMessageRead(BaseModel):
     id: str
     session_id: str
+    match_id: str | None = None
     role: str
     content: str
     created_at: datetime
@@ -125,6 +157,7 @@ class BrokerMessageRead(BaseModel):
         return cls(
             id=message.id,
             session_id=message.session_id,
+            match_id=getattr(message, "match_id", None),
             role=message.role,
             content=message.content,
             created_at=message.created_at,
@@ -164,16 +197,6 @@ class BrokerRequestRead(BaseModel):
         )
 
 
-class BrokerConnectOfferRead(BaseModel):
-    id: str
-    match_id: str
-    prompt: str
-    status: str
-    created_at: datetime
-
-    model_config = {"from_attributes": True}
-
-
 class BrokerIntroductionAction(BaseModel):
     action: Literal["accept", "dismiss"]
 
@@ -185,6 +208,8 @@ class BrokerSessionDetail(BaseModel):
     attachments: list[BrokerAttachmentRead] = Field(default_factory=list)
     pending_upload_requests: list[BrokerAttachmentRequestRead] = Field(default_factory=list)
     connect_offer: BrokerConnectOfferRead | None = None
+    matches: list[BrokerMatchLaneRead] = Field(default_factory=list)
+    connect_offers: list[BrokerConnectOfferRead] = Field(default_factory=list)
 
 
 class BrokerRequestMatch(BaseModel):

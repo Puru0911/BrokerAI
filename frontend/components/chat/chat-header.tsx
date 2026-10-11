@@ -1,3 +1,5 @@
+import type { ReactNode } from "react"
+
 import { IconMenu } from "@/components/icons"
 import { formatStatus } from "@/lib/chat-format"
 import { cn } from "@/lib/cn"
@@ -5,11 +7,13 @@ import { cn } from "@/lib/cn"
 export function ChatHeader({
   title,
   status,
-  onOpenSessions
+  onOpenSessions,
+  action
 }: {
   title: string
   status: string
   onOpenSessions: () => void
+  action?: ReactNode
 }) {
   return (
     <header className="flex h-14 shrink-0 items-center gap-3 border-b border-line bg-surface/80 px-4 backdrop-blur-sm sm:px-6">
@@ -20,12 +24,13 @@ export function ChatHeader({
       >
         <IconMenu />
       </button>
-      <div className="min-w-0">
+      <div className="min-w-0 flex-1">
         <h1 className="truncate text-[15px] font-semibold tracking-tight text-ink sm:text-base">
           {title}
         </h1>
-        <p className="truncate text-xs text-muted">{formatStatus(status)}</p>
+        <p className="truncate text-xs text-muted">{status.includes(" ") ? status : formatStatus(status)}</p>
       </div>
+      {action ? <div className="shrink-0">{action}</div> : null}
     </header>
   )
 }
