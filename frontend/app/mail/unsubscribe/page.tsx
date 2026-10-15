@@ -55,16 +55,16 @@ async function unsubscribe(token: string) {
 export default async function UnsubscribePage({
   searchParams
 }: {
-  searchParams: Promise<{ token?: string }> | { token?: string }
+  searchParams: Promise<{ token?: string }>
 }) {
-  const params = await Promise.resolve(searchParams)
+  const params = await searchParams
   const result = await unsubscribe(params.token ?? "")
 
   return (
     <AuthShell title={result.title} description={result.message}>
       <a
         href="/app"
-        className="flex h-11 items-center justify-center rounded-xl bg-accent text-sm font-semibold text-surface transition hover:bg-[#0c4d48]"
+        className="flex h-11 items-center justify-center rounded-xl bg-accent text-sm font-semibold text-surface transition hover:bg-accent-hover"
       >
         Back to chat
       </a>

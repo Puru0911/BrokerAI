@@ -68,6 +68,7 @@ class ToolContext:
     trigger: Trigger
     trigger_match_id: str | None = None
     focus_match_id: str | None = None
+    reply_match_id: str | None = field(init=False, default=None)
     outreach_context: str | None = None
     current_user_messages: list[AgentMessage] = field(default_factory=list)
     saved_this_turn: bool = False
@@ -77,6 +78,11 @@ class ToolContext:
     new_attachment_ids: list[str] = field(default_factory=list)
     queued_outreach: list[OutreachJob] = field(default_factory=list)
     queued_mail: list[MailJob] = field(default_factory=list)
+
+    def __post_init__(self) -> None:
+        # Human-visible replies on this turn stay on the lane the user sent from.
+        # open_match may adopt focus_match_id for later tools in the same turn.
+        self.reply_match_id = self.focus_match_id
 
     def track(self, message: AgentMessage) -> None:
         if message.session_id == self.session.id:
@@ -93,6 +99,10 @@ def _event_snapshot(event) -> dict[str, Any]:
 
 def focused_match_id(ctx: ToolContext) -> str | None:
     return ctx.focus_match_id or ctx.trigger_match_id
+
+
+def reply_lane_id(ctx: ToolContext) -> str | None:
+    return ctx.reply_match_id
 
 
 async def resolve_session_role(ctx: ToolContext) -> SessionRole:
@@ -189,7 +199,6 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
             "kind": item["kind"],
             "label": item["label"],
             "purpose": item["purpose"],
-            "filename": item["filename"],
             "content_type": item["content_type"],
         }
         for item in other_attachments

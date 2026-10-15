@@ -91,6 +91,55 @@ def sanitize_filename(name: str | None) -> str:
     return cleaned[:180] or "upload"
 
 
+def is_image_type(content_type: str | None) -> bool:
+    return (content_type or "").startswith("image/")
+
+
+def is_device_filename(name: str | None, original: str | None = None) -> bool:
+    """True when a label is the user's machine filename (or looks like one)."""
+    cleaned = (name or "").strip()
+    if not cleaned:
+        return False
+    if original and cleaned == original.strip():
+        return True
+    suffix = Path(cleaned).suffix.lower()
+    allowed = {ext for suffixes in ALLOWED_CONTENT_TYPES.values() for ext in suffixes}
+    return suffix in allowed
+
+
+def generic_file_label(content_type: str | None, purpose: str | None = None) -> str:
+    """Human label for UI and the model. Never the original device filename."""
+    if purpose == "resume":
+        return "Resume"
+    if purpose == "id_document":
+        return "ID document"
+    if purpose == "portfolio" and not is_image_type(content_type):
+        return "Portfolio file"
+    if is_image_type(content_type):
+        return "Photo"
+    if (content_type or "") == "application/pdf":
+        return "PDF"
+    if "word" in (content_type or ""):
+        return "Document"
+    return "File"
+
+
+def model_facing_label(attachment: AgentAttachment) -> str:
+    """Label the model and counterpart cards may see. Never a device filename."""
+    label = (attachment.label or "").strip()
+    if label and not is_device_filename(label, attachment.original_filename):
+        return label
+    return generic_file_label(attachment.content_type, attachment.purpose)
+
+
+def stored_basename(content_type: str, original: str) -> str:
+    suffix = Path(original).suffix.lower()
+    allowed = ALLOWED_CONTENT_TYPES.get(content_type) or set()
+    if suffix not in allowed:
+        suffix = next(iter(sorted(allowed)), ".bin")
+    return f"file{suffix}"
+
+
 def normalize_content_type(content_type: str | None, filename: str) -> str:
     claimed = (content_type or "").split(";")[0].strip().lower()
     suffix = Path(filename).suffix.lower()
@@ -103,10 +152,6 @@ def normalize_content_type(content_type: str | None, filename: str) -> str:
         if suffix in suffixes:
             return mime
     raise AttachmentError("That file type is not supported.")
-
-
-def is_image_type(content_type: str | None) -> bool:
-    return (content_type or "").startswith("image/")
 
 
 def can_share_directly(share_class: str) -> bool:
@@ -172,21 +217,19 @@ def extract_urls(text: str) -> list[str]:
 
 
 def upload_notice(attachments: list[AgentAttachment], caption: str) -> str:
-    """User-visible text when files/links are added. The agent classifies from history."""
+    """User-visible text when files/links are added. Never include original filenames."""
     if caption.strip():
         return caption.strip()
-    names: list[str] = []
-    for item in attachments:
-        if item.kind == KIND_URL:
-            names.append(item.label or item.url or "link")
-        else:
-            names.append(item.label or item.original_filename or "file")
-    if not names:
+    if not attachments:
         return "Uploaded a file."
-    if len(names) == 1:
-        kind = "link" if attachments[0].kind == KIND_URL else "file"
-        return f"Uploaded a {kind}: {names[0]}"
-    return "Uploaded files: " + ", ".join(names)
+    if attachments[0].kind == KIND_URL and len(attachments) == 1:
+        return "Uploaded a link."
+    if all(item.kind == KIND_URL for item in attachments):
+        return f"Uploaded {len(attachments)} links."
+    count = len(attachments)
+    if all(is_image_type(item.content_type) for item in attachments):
+        return "Uploaded a photo." if count == 1 else f"Uploaded {count} photos."
+    return "Uploaded a file." if count == 1 else f"Uploaded {count} files."
 
 
 def public_attachment_payload(
@@ -331,7 +374,9 @@ async def create_file_attachment(
     safe_name = sanitize_filename(filename)
     mime = normalize_content_type(content_type, safe_name)
     attachment_id = str(uuid4())
-    storage_key = f"{user_id}/{session_id}/{attachment_id}/{safe_name}"
+    storage_key = (
+        f"{user_id}/{session_id}/{attachment_id}/{stored_basename(mime, safe_name)}"
+    )
     try:
         await get_attachment_store().put(storage_key, data, mime)
     except StorageNotConfiguredError:
@@ -347,7 +392,7 @@ async def create_file_attachment(
         request_id=request_id,
         kind=KIND_FILE,
         share_class=SHARE_PENDING,
-        label=safe_name,
+        label=generic_file_label(mime),
         original_filename=safe_name,
         content_type=mime,
         size_bytes=len(data),
@@ -359,6 +404,7 @@ async def create_file_attachment(
     await db.flush()
     if upload_request_id:
         await fulfill_upload_request(db, upload_request_id, attachment)
+        attachment.label = generic_file_label(mime, attachment.purpose)
     return attachment
 
 
@@ -404,10 +450,11 @@ async def fulfill_upload_request(
     prompt = await db.get(AgentAttachmentRequest, request_id)
     if prompt is None or prompt.session_id != attachment.session_id:
         return
-    if prompt.status != REQUEST_PENDING:
+    if prompt.status not in {REQUEST_PENDING, REQUEST_FULFILLED}:
         return
-    prompt.status = REQUEST_FULFILLED
-    prompt.fulfilled_by_attachment_id = attachment.id
+    if prompt.status == REQUEST_PENDING:
+        prompt.status = REQUEST_FULFILLED
+        prompt.fulfilled_by_attachment_id = attachment.id
     if not attachment.purpose:
         attachment.purpose = prompt.purpose
     if prompt.hint and not attachment.description:
@@ -493,10 +540,15 @@ async def classify_attachment(
     if purpose and purpose not in PURPOSE_VALUES:
         raise AttachmentError("Unknown attachment purpose.")
     attachment.share_class = share_class
-    if label and label.strip():
-        attachment.label = label.strip()[:160]
     if purpose:
         attachment.purpose = purpose
+    proposed = (label or "").strip()[:160]
+    if proposed and not is_device_filename(proposed, attachment.original_filename):
+        attachment.label = proposed
+    elif is_device_filename(attachment.label, attachment.original_filename) or not (
+        attachment.label or ""
+    ).strip():
+        attachment.label = generic_file_label(attachment.content_type, attachment.purpose)
     await db.flush()
     return attachment
 
@@ -634,7 +686,7 @@ async def request_share_permission(
             "version": CARD_VERSION,
             "match_id": match.id,
             "attachment_id": attachment.id,
-            "label": attachment.label or attachment.original_filename or "this file",
+            "label": model_facing_label(attachment),
             "purpose": attachment.purpose,
             "reason": "This looks personal. I need your OK before I share it.",
         },
@@ -689,25 +741,41 @@ async def record_grant(
     return existing
 
 
+_GENERIC_GALLERY_LABELS = {
+    "Photo",
+    "Photos",
+    "File",
+    "PDF",
+    "Document",
+    "Resume",
+    "ID document",
+    "Portfolio file",
+    "Shared file",
+    "Shared files",
+}
+
+
 def gallery_title(attachments: list[AgentAttachment]) -> str:
     """One title for a set of files, so listing photos are not 'photo 1', 'photo 2'."""
     if not attachments:
         return "Shared files"
-    labels = [
-        (item.label or item.original_filename or "").strip() for item in attachments
-    ]
+    labels = [model_facing_label(item) for item in attachments]
     stripped = [
         re.sub(r"\s+photo\s+\d+\s*$", "", label, flags=re.IGNORECASE).strip()
         for label in labels
     ]
-    if stripped and all(item and item == stripped[0] for item in stripped):
+    if (
+        stripped
+        and all(item and item == stripped[0] for item in stripped)
+        and stripped[0] not in _GENERIC_GALLERY_LABELS
+    ):
         return stripped[0]
     purposes = {item.purpose for item in attachments if item.purpose}
     if purposes == {"listing_photos"}:
         return "Listing photos"
     if all(is_image_type(item.content_type) for item in attachments):
         if len(attachments) == 1:
-            return labels[0] or "Photo"
+            return "Photo"
         return "Photos"
     if len(attachments) == 1:
         return labels[0] or "Shared file"
@@ -719,10 +787,9 @@ def _share_card_item(attachment: AgentAttachment) -> dict[str, Any]:
     return {
         "id": attachment.id,
         "kind": attachment.kind,
-        "label": attachment.label,
+        "label": model_facing_label(attachment),
         "purpose": attachment.purpose,
         "content_type": attachment.content_type,
-        "original_filename": attachment.original_filename,
         "url": attachment.url if include_url else None,
     }
 
@@ -1030,9 +1097,8 @@ async def context_attachments(
             "id": item.id,
             "kind": item.kind,
             "share_class": item.share_class,
-            "label": item.label,
+            "label": model_facing_label(item),
             "purpose": item.purpose,
-            "filename": item.original_filename,
             "content_type": item.content_type,
             "description": item.description,
         }

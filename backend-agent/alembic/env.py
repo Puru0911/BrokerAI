@@ -11,7 +11,7 @@ from app.core.config import settings
 from app.db.base import Base
 from app.db.models import broker as _broker  # noqa: F401
 from app.db.models import user_profile as _user_profile  # noqa: F401
-from app.db.session import normalize_async_db_url
+from app.db.session import connect_args, normalize_async_db_url
 
 config = context.config
 
@@ -48,6 +48,7 @@ async def run_async_migrations() -> None:
         {"sqlalchemy.url": get_url()},
         prefix="sqlalchemy.",
         poolclass=pool.NullPool,
+        connect_args=connect_args(),
     )
     async with connectable.connect() as connection:
         await connection.run_sync(do_run_migrations)

@@ -1,6 +1,6 @@
 # BrokerAI — Project Context
 
-Last updated: 2026-10-07
+Last updated: 2026-10-15
 
 ## MVP Goal
 
@@ -128,7 +128,7 @@ Python still enforces: no matching yourself, no contacts before accept, identity
 
 ### LLM
 
-OpenRouter (primary) uses LangChain `ChatOpenRouter` with a config-driven `reasoning` object (`OPENROUTER_REASONING_ENABLED` / `EFFORT` / `EXCLUDE`). Default model is `nvidia/nemotron-3-ultra-550b-a55b:free` at medium effort. Groq uses `ChatGroq` with `reasoning_format=parsed` so Qwen thinking stays in `reasoning_content` and tools come back as JSON `tool_calls` (not XML). Gemini stays on `ChatOpenAI`. The agent uses native tool calling. Semantic indexing (`invoke_text_model`) turns reasoning off so the profile rewrite does not spend a thinking budget on free providers; retrieval planning and pair evaluation still use structured JSON helpers with reasoning on. When OpenRouter returns HTTP 200 with a `provider_unavailable` / Unmarshaller error body, the broker tool loop retries the model invoke up to `AGENT_MODEL_INVOKE_RETRIES` (default 3) and tells the model the last generation failed so it continues from tools that already succeeded.
+OpenRouter (primary) uses LangChain `ChatOpenRouter` with a config-driven `reasoning` object (`OPENROUTER_REASONING_ENABLED` / `EFFORT` / `EXCLUDE`). Default model is `nvidia/nemotron-3-ultra-550b-a55b:free` at medium effort. Broker chat sampling is `temperature=0.4` and `top_p=0.85`. Groq uses `ChatGroq` with `reasoning_format=parsed` so Qwen thinking stays in `reasoning_content` and tools come back as JSON `tool_calls` (not XML). Gemini stays on `ChatOpenAI`. The agent uses native tool calling. Semantic indexing (`invoke_text_model`) turns reasoning off so the profile rewrite does not spend a thinking budget on free providers; request title/summary generation (`generate_request_copy` on save/update) uses structured JSON with reasoning off the same way. Retrieval planning and pair evaluation still use structured JSON helpers with reasoning on. `AGENT_NAME` (default `BrokerAI`) is the chat welcome name; the frontend mirror is `NEXT_PUBLIC_AGENT_NAME`. When OpenRouter returns HTTP 200 with a `provider_unavailable` / Unmarshaller error body, the broker tool loop retries the model invoke up to `AGENT_MODEL_INVOKE_RETRIES` (default 3) and tells the model the last generation failed so it continues from tools that already succeeded.
 
 If no API key is configured, the agent holds the request and says the model is unavailable.
 

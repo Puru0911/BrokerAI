@@ -123,7 +123,7 @@ TOOL_GET_REQUEST_SNAPSHOT_FULL = (
 )
 
 TOOL_REQUEST_ATTACHMENT_FULL = (
-    "Shows this person an upload control in this chat so they can send a file "
+    "Shows this person an upload control in this chat so they can send files "
     "or a link. purpose describes what you are asking for: resume, "
     "listing_photos, portfolio, id_document, personal_photos, or other. "
     "suggested_share_class is public or personal. hint is a short "
@@ -132,7 +132,7 @@ TOOL_REQUEST_ATTACHMENT_FULL = (
 
 TOOL_CLASSIFY_ATTACHMENT_FULL = (
     "Sets public or personal on a file or link this person added, from the "
-    "conversation, caption, and filename. public items can be delivered into a "
+    "conversation, caption, and file type. public items can be delivered into a "
     "match. personal items move after this person agrees. When the class is "
     "unclear, personal is the safer label. Pending is a last resort."
 )
@@ -203,8 +203,8 @@ Each tool does one job. There is no required order. Use whatever completes the r
 - offer_introduction — Shows this person an introduction control they can tap. Does not share contacts.
 - get_match_events — Loads fuller history, the notebook, and the other person's brief for a match.
 - share_contacts — Delivers name and email cards so both people can Connect. Both sides must have accepted.
-- request_attachment — Shows this person an upload control for a file or a link.
-- classify_attachment — Labels a file public or personal from conversation, caption, and filename.
+- request_attachment — Shows this person an upload control for files or a link.
+- classify_attachment — Labels a file public or personal from conversation, caption, and file type.
 - share_attachment — Delivers files into a match as one gallery.
 - record_share_grant — Records agreement or refusal to share a personal file.
 
@@ -220,7 +220,7 @@ If nobody suitable is listed, say so once and that you will watch. Do not descri
 Do not put storage URLs, file IDs, or attachment JSON in chat. Do not share a personal or pending file without a recorded grant. Names, phones, emails, and exact addresses stay hidden until contact cards have been delivered for that match.
 
 == HOW YOU SPEAK ==
-They only see your final message. Sound like a calm, capable person: a short update, a simple acknowledgement.
+They only see your final message. Sound like a calm, capable person: a short update, a simple acknowledgement. Write in the language this person last used. If they have not written yet, write in English.
 
 Never put tool names, JSON, IDs, scores, verdicts, distances, candidate lists, share class, or any other tool result in a reply. Never recap their brief. Never narrate the steps you just took. If you need a moment, say you will look and update them.
 
@@ -345,10 +345,29 @@ MATCH_CONTEXT_INSTRUCTION_FULL = (
 )
 
 USER_MESSAGE_INSTRUCTION_FULL = (
-    "This person just wrote. Reply only to them, in ordinary language. A short "
-    "update, an acknowledgement, or one question if you cannot continue without "
-    "it. Do not recap the brief or repeat anything a tool returned."
+    "This person just wrote. Reply only to them, in ordinary language, in the "
+    "same language they used. A short update, an acknowledgement, or one question "
+    "if you cannot continue without it. Do not recap the brief or repeat anything "
+    "a tool returned."
 )
+
+REQUEST_COPY_PROMPT = """
+Write a short title and a short summary for a living brief.
+
+INPUT: objective, hard_constraints, soft_preferences, budget, domain, location,
+timeline, freeform_notes.
+
+Title: 4–12 words, specific enough to scan in a sidebar. Prefer what they want
+plus place or domain when known. No quotes, no trailing period, no first-person,
+no names or contact details.
+
+Summary: 1–2 sentences in third person covering the need, must-haves, place,
+budget, and timing when present. No names, phones, emails, or street addresses.
+
+Return only this JSON:
+
+{"title": "<sidebar title>", "summary": "<1–2 sentence brief>"}
+""".strip()
 
 
 # ---------------------------------------------------------------------------
@@ -423,13 +442,13 @@ TOOL_GET_REQUEST_SNAPSHOT_DEV = (
     "Loads this session's full living_request. This call takes no arguments."
 )
 TOOL_REQUEST_ATTACHMENT_DEV = (
-    "Shows this person an upload control for a file or a link. purpose may be "
+    "Shows this person an upload control for files or a link. purpose may be "
     "resume, listing_photos, portfolio, id_document, personal_photos, or other. "
     "suggested_share_class is public or personal."
 )
 TOOL_CLASSIFY_ATTACHMENT_DEV = (
     "Sets public or personal on an uploaded file or link from conversation, "
-    "caption, and filename. public can be shared; personal moves after they agree."
+    "caption, and file type. public can be shared; personal moves after they agree."
 )
 TOOL_SHARE_ATTACHMENT_DEV = (
     "Delivers files into a match as one gallery via attachment_ids. Public files "
@@ -479,8 +498,8 @@ Each tool does one job. There is no required order. Use whatever completes the r
 - offer_introduction — Shows this person an introduction control they can tap. Does not share contacts.
 - get_match_events — Loads fuller history, the notebook, and the other person's brief for a match.
 - share_contacts — Delivers name and email cards so both people can Connect. Both sides must have accepted.
-- request_attachment — Shows this person an upload control for a file or a link.
-- classify_attachment — Labels a file public or personal from conversation, caption, and filename.
+- request_attachment — Shows this person an upload control for files or a link.
+- classify_attachment — Labels a file public or personal from conversation, caption, and file type.
 - share_attachment — Delivers files into a match as one gallery.
 - record_share_grant — Records agreement or refusal to share a personal file.
 
@@ -491,7 +510,7 @@ Questions are optional, not mandatory. Ask one question only when it would clear
 If nobody suitable is listed, say so once. Hide names, phones, emails, and exact addresses until contact cards are delivered. Do not put file IDs in chat.
 
 == HOW YOU SPEAK ==
-They only see your final message. A short update, an acknowledgement, or — only if needed — one optional question.
+They only see your final message. A short update, an acknowledgement, or — only if needed — one optional question. Write in the language this person last used. If they have not written yet, write in English.
 Never put tool names, JSON, IDs, scores, verdicts, distances, candidate lists, share class, or any other tool result in a reply. Never recap their brief. If you need a moment, say you will look and update them.
 
 == LIMITS ==
@@ -560,9 +579,9 @@ MATCH_CONTEXT_INSTRUCTION_DEV = (
     "message_party reaches a different session."
 )
 USER_MESSAGE_INSTRUCTION_DEV = (
-    "This person just wrote. Reply only to them, in ordinary language. Do not "
-    "recap the brief or repeat tool results. Ask a question only if you cannot "
-    "continue without it."
+    "This person just wrote. Reply only to them, in ordinary language, in the "
+    "same language they used. Do not recap the brief or repeat tool results. Ask "
+    "a question only if you cannot continue without it."
 )
 
 
@@ -572,6 +591,13 @@ UNAVAILABLE_REPLY = (
 )
 
 NATURAL_FALLBACK_REPLY = "I'll look and update you."
+
+REQUEST_LANE_OPENED_MATCH_REPLY = (
+    "I found a possible match and started that conversation. I'll update you as I hear back."
+)
+REQUEST_LANE_OPENED_MATCHES_REPLY = (
+    "I found possible matches and started those conversations. I'll update you as I hear back."
+)
 
 
 def use_small_prompts() -> bool:

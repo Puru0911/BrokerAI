@@ -6,6 +6,7 @@ import { createPortal } from "react-dom"
 import { IconX, Spinner } from "@/components/icons"
 import { cn } from "@/lib/cn"
 import type { BrokerAttachment } from "@/lib/api/broker"
+import { MAX_UPLOAD_FILES } from "@/lib/local-attachments"
 import { useAuthObjectUrl } from "@/lib/use-auth-object-url"
 
 export type StackAttachment = {
@@ -135,7 +136,7 @@ function AuthenticatedImage({
   onOpen: (src: string, name: string) => void
 }) {
   const src = useAuthObjectUrl(attachment.content_url, accessToken)
-  const name = attachment.label || attachment.original_filename || "Photo"
+  const name = attachment.label || "Photo"
   const [natural, setNatural] = useState<{ width: number; height: number } | null>(
     null
   )
@@ -257,9 +258,7 @@ export function AttachmentChip({
   )
   const href = attachment.kind === "url" ? attachment.url : fileSrc
   const name =
-    attachment.label ||
-    attachment.original_filename ||
-    (attachment.kind === "url" ? "Link" : "File")
+    attachment.label || (attachment.kind === "url" ? "Link" : "File")
   const kindLabel = attachment.kind === "url" ? "Link" : fileKindLabel(attachment)
   const privateItem = attachment.share_class === "personal"
 
@@ -309,7 +308,7 @@ export function AttachmentRequestCard({
 }: {
   payload: AttachmentRequestPayload
   uploading: boolean
-  onUpload: (file: File) => void
+  onUpload: (files: File[]) => void
 }) {
   return (
     <div className="w-full min-w-56 space-y-3">
@@ -328,11 +327,15 @@ export function AttachmentRequestCard({
         <input
           type="file"
           className="sr-only"
+          multiple
           accept="image/jpeg,image/png,image/webp,image/heic,.pdf,.docx"
           disabled={uploading}
           onChange={(event) => {
-            const file = event.target.files?.[0]
-            if (file) onUpload(file)
+            const selected = Array.from(event.target.files || []).slice(
+              0,
+              MAX_UPLOAD_FILES
+            )
+            if (selected.length) onUpload(selected)
             event.target.value = ""
           }}
         />
@@ -341,6 +344,7 @@ export function AttachmentRequestCard({
           {uploading ? "Uploading…" : "Upload"}
         </span>
       </label>
+      <p className="text-xs text-muted">Up to {MAX_UPLOAD_FILES} files.</p>
     </div>
   )
 }
@@ -381,7 +385,7 @@ export function AttachmentPermissionCard({
             type="button"
             disabled={busy}
             onClick={() => onGrant(true)}
-            className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
+            className="flex h-10 flex-1 items-center justify-center gap-2 rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-accent-hover disabled:opacity-50"
           >
             {busy ? <Spinner className="h-4 w-4" /> : null}
             {busy ? "Sharing…" : "Allow"}

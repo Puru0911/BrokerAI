@@ -1,6 +1,7 @@
 import type { ReactNode } from "react"
 
 import { BrandMarkBadge } from "@/components/brand/mark"
+import { AgentWordmark } from "@/components/brand/wordmark"
 
 export function AuthShell({
   title,
@@ -15,7 +16,8 @@ export function AuthShell({
     <main className="flex min-h-screen items-center justify-center bg-canvas px-5 py-12">
       <section className="w-full max-w-[420px]">
         <div className="mb-8 flex flex-col items-center text-center">
-          <BrandMarkBadge size={56} />
+          <BrandMarkBadge size={72} />
+          <AgentWordmark size="lg" className="mt-4" />
           <h1 className="mt-6 text-2xl font-semibold tracking-tight text-ink">
             {title}
           </h1>

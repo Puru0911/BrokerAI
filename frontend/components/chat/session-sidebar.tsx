@@ -1,22 +1,29 @@
 "use client"
 
-import { BrandMark } from "@/components/brand/mark"
+import { useEffect, useRef, useState } from "react"
+
+import { BrandLockup } from "@/components/brand/wordmark"
 import { StatusPill } from "@/components/chat/chat-header"
-import { IconLogout, IconPlus, IconTrash, Spinner } from "@/components/icons"
-import { Button } from "@/components/ui/button"
+import {
+  IconChevronDown,
+  IconLogout,
+  IconPlus,
+  IconTrash,
+  Spinner
+} from "@/components/icons"
 import { connectionPreview, formatSessionTime, formatStatus } from "@/lib/chat-format"
 import { cn } from "@/lib/cn"
 import type { BrokerMatchLane, BrokerSession, ConnectionSummary } from "@/lib/api/broker"
 
 export function SessionSidebar({
   open,
+  userName,
   userEmail,
   sessions,
   connections,
   activeSessionId,
   activeMatchId,
   activeConnectionId,
-  creatingSession,
   deletingSessionId,
   onCreateSession,
   onSelectSession,
@@ -29,13 +36,13 @@ export function SessionSidebar({
   logoutAction
 }: {
   open: boolean
+  userName: string
   userEmail: string
   sessions: BrokerSession[]
   connections: ConnectionSummary[]
   activeSessionId: string | null
   activeMatchId: string | null
   activeConnectionId: string | null
-  creatingSession: boolean
   deletingSessionId: string | null
   onCreateSession: () => void
   onSelectSession: (sessionId: string) => void
@@ -54,27 +61,16 @@ export function SessionSidebar({
         open ? "translate-x-0" : "-translate-x-full"
       )}
     >
-      <div className="flex h-14 items-center gap-3 px-4">
-        <BrandMark size={28} className="shrink-0 text-accent" />
-        <div className="min-w-0">
-          <div className="text-sm font-semibold tracking-tight text-ink">
-            BrokerAI
-          </div>
-          <div className="truncate text-[11px] text-muted">{userEmail}</div>
-        </div>
+      <div className="flex h-16 items-center px-4">
+        <BrandLockup markSize={40} nameSize="md" />
       </div>
 
       <div className="px-3 pb-3">
         <button
           onClick={onCreateSession}
-          disabled={creatingSession}
-          className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-accent text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
+          className="flex h-10 w-full items-center justify-center gap-2 rounded-xl bg-accent text-sm font-semibold text-surface transition hover:bg-accent-hover"
         >
-          {creatingSession ? (
-            <Spinner className="h-4 w-4" />
-          ) : (
-            <IconPlus />
-          )}
+          <IconPlus />
           New request
         </button>
       </div>
@@ -233,37 +229,127 @@ export function SessionSidebar({
         </section>
       </div>
 
-      <div className="border-t border-line p-3">
-        <button
-          type="button"
-          onClick={onToggleEmailNotify}
-          disabled={emailNotifyBusy}
-          className="mb-1 flex h-10 w-full items-center justify-between gap-3 rounded-xl px-2 text-left text-sm text-ink transition hover:bg-canvas disabled:opacity-50"
-        >
-          <span>Email me when I'm away</span>
-          <span
-            aria-hidden
-            className={cn(
-              "relative h-5 w-9 shrink-0 rounded-full transition",
-              emailNotify ? "bg-accent" : "bg-line"
-            )}
-          >
-            <span
-              className={cn(
-                "absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow-sm transition",
-                emailNotify ? "left-4" : "left-0.5"
-              )}
-            />
-          </span>
-        </button>
-        <form action={logoutAction}>
-          <Button type="submit" variant="ghost" className="h-10 w-full justify-start text-muted">
-            <IconLogout />
-            Sign out
-          </Button>
-        </form>
-      </div>
+      <SidebarProfileMenu
+        userName={userName}
+        userEmail={userEmail}
+        emailNotify={emailNotify}
+        emailNotifyBusy={emailNotifyBusy}
+        onToggleEmailNotify={onToggleEmailNotify}
+        logoutAction={logoutAction}
+      />
     </aside>
+  )
+}
+
+function SidebarProfileMenu({
+  userName,
+  userEmail,
+  emailNotify,
+  emailNotifyBusy,
+  onToggleEmailNotify,
+  logoutAction
+}: {
+  userName: string
+  userEmail: string
+  emailNotify: boolean
+  emailNotifyBusy: boolean
+  onToggleEmailNotify: () => void
+  logoutAction: (formData: FormData) => void | Promise<void>
+}) {
+  const [open, setOpen] = useState(false)
+  const rootRef = useRef<HTMLDivElement>(null)
+  const displayName = userName.trim() || userEmail.split("@")[0] || "Signed in"
+
+  useEffect(() => {
+    if (!open) return
+
+    function onPointer(event: MouseEvent) {
+      if (!rootRef.current?.contains(event.target as Node)) {
+        setOpen(false)
+      }
+    }
+
+    function onKey(event: KeyboardEvent) {
+      if (event.key === "Escape") setOpen(false)
+    }
+
+    document.addEventListener("mousedown", onPointer)
+    document.addEventListener("keydown", onKey)
+    return () => {
+      document.removeEventListener("mousedown", onPointer)
+      document.removeEventListener("keydown", onKey)
+    }
+  }, [open])
+
+  return (
+    <div ref={rootRef} className="relative border-t border-line p-3">
+      {open ? (
+        <div
+          role="menu"
+          className="absolute inset-x-3 bottom-full z-10 mb-2 overflow-hidden rounded-xl border border-line bg-surface shadow-composer"
+        >
+          <button
+            type="button"
+            role="menuitem"
+            onClick={onToggleEmailNotify}
+            disabled={emailNotifyBusy}
+            className="flex h-11 w-full items-center justify-between gap-3 px-3 text-left text-sm text-ink transition hover:bg-canvas disabled:opacity-50"
+          >
+            <span>Email me when I'm away</span>
+            <span
+              aria-hidden
+              className={cn(
+                "relative h-5 w-9 shrink-0 rounded-full transition",
+                emailNotify ? "bg-accent" : "bg-line"
+              )}
+            >
+              <span
+                className={cn(
+                  "absolute top-0.5 h-4 w-4 rounded-full bg-surface shadow-sm transition",
+                  emailNotify ? "left-4" : "left-0.5"
+                )}
+              />
+            </span>
+          </button>
+          <form action={logoutAction} className="border-t border-line">
+            <button
+              type="submit"
+              role="menuitem"
+              className="flex h-11 w-full items-center gap-2 px-3 text-left text-sm text-muted transition hover:bg-canvas hover:text-ink"
+            >
+              <IconLogout />
+              Sign out
+            </button>
+          </form>
+        </div>
+      ) : null}
+
+      <button
+        type="button"
+        aria-haspopup="menu"
+        aria-expanded={open}
+        onClick={() => setOpen((current) => !current)}
+        className="flex w-full items-center gap-3 rounded-xl px-1.5 py-1.5 text-left transition hover:bg-canvas"
+      >
+        <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-accent-soft text-xs font-semibold text-accent">
+          {initials(displayName, userEmail)}
+        </span>
+        <span className="min-w-0 flex-1">
+          <span className="block truncate text-sm font-medium text-ink">
+            {displayName}
+          </span>
+          <span className="block truncate text-[11px] text-muted">
+            {userEmail}
+          </span>
+        </span>
+        <IconChevronDown
+          className={cn(
+            "shrink-0 text-muted transition",
+            open && "rotate-180"
+          )}
+        />
+      </button>
+    </div>
   )
 }
 
@@ -318,9 +404,17 @@ function SidebarMatchRow({
   )
 }
 
-function initials(name: string) {
+function initials(name: string, email?: string) {
   const parts = name.trim().split(/\s+/).filter(Boolean)
-  if (!parts.length) return "?"
-  if (parts.length === 1) return parts[0].slice(0, 2).toUpperCase()
-  return `${parts[0][0]}${parts[1][0]}`.toUpperCase()
+  if (parts.length >= 2) {
+    const first = parts[0][0]
+    const last = parts[parts.length - 1][0]
+    return `${first}${last}`.toUpperCase()
+  }
+  if (parts.length === 1) {
+    return parts[0][0].toUpperCase()
+  }
+  const local = email?.split("@")[0]?.trim()
+  if (local) return local[0].toUpperCase()
+  return "?"
 }

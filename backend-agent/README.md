@@ -15,7 +15,7 @@ uv run alembic upgrade head
 uv run uvicorn app.main:app --reload --port 8000
 ```
 
-Set `SUPABASE_JWT_SECRET` from Supabase **Project Settings → API → JWT Secret** if you sign in with Google or magic link. `dev:` tokens only work when `ENV=local`. Production also needs `INTERNAL_JOB_SECRET` and `uv run alembic upgrade head` (the process will not start if the schema is behind). Set `AGENT_PROMPT_SIZE=full` or `small` (`compressed` / `compact` also mean small) to choose the production or shorter prompt set; restart after changing it.
+Set `SUPABASE_JWT_SECRET` from Supabase **Project Settings → API → JWT Secret** if you sign in with Google or magic link. `dev:` tokens only work when `ENV=local`. Production also needs `INTERNAL_JOB_SECRET` and `uv run alembic upgrade head` (the process will not start if the schema is behind). Set `AGENT_PROMPT_SIZE=full` or `small` (`compressed` / `compact` also mean small) to choose the production or shorter prompt set; restart after changing it. `AGENT_NAME` (default `BrokerAI`) is the name in the empty-session welcome: `Hi! I'm {AGENT_NAME}. Tell me what you're looking for and I'll find you the right people`. Match it on the frontend with `NEXT_PUBLIC_AGENT_NAME`.
 
 Point the frontend at this process with `NEXT_PUBLIC_BACKEND_URL=http://127.0.0.1:8000`.
 

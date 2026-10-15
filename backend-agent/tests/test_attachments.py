@@ -10,15 +10,20 @@ from app.services.attachments import (
     ATTACHMENT_REQUEST_KIND,
     ATTACHMENT_SHARE_KIND,
     AttachmentError,
+    _share_card_item,
     apply_permission_grant_status,
     can_share_directly,
     counterpart_file_inventory,
     extract_urls,
     gallery_title,
+    generic_file_label,
+    is_device_filename,
+    model_facing_label,
     normalize_content_type,
     owner_and_recipient_requests,
     parse_structured_card,
     sanitize_filename,
+    stored_basename,
     upload_notice,
 )
 from app.services.storage import MemoryAttachmentStore
@@ -119,18 +124,72 @@ def test_extract_urls_dedupes_and_strips_punctuation() -> None:
     assert extract_urls(text) == ["https://example.com/listing", "http://foo.test/a"]
 
 
+def test_generic_file_label_never_uses_the_device_name() -> None:
+    assert generic_file_label("application/pdf", "resume") == "Resume"
+    assert generic_file_label("image/jpeg", "listing_photos") == "Photo"
+    assert generic_file_label("application/pdf", None) == "PDF"
+    assert stored_basename("image/jpeg", "IMG_6181.jpeg") == "file.jpeg"
+    assert stored_basename("application/pdf", "My Resume (final).pdf") == "file.pdf"
+    assert is_device_filename("IMG_6181.jpeg") is True
+    assert is_device_filename("Royal Enfield GT650") is False
+    assert is_device_filename("Photo", "IMG_6181.jpeg") is False
+    assert is_device_filename("My_Resume_final_.pdf", "My_Resume_final_.pdf") is True
+
+
+def test_model_facing_label_strips_device_filenames() -> None:
+    leaked = AgentAttachment(
+        id="a1",
+        user_id="u1",
+        session_id="s1",
+        kind="file",
+        content_type="image/jpeg",
+        original_filename="IMG_6181.jpeg",
+        label="IMG_6181.jpeg",
+        purpose="listing_photos",
+        status="ready",
+    )
+    named = AgentAttachment(
+        id="a2",
+        user_id="u1",
+        session_id="s1",
+        kind="file",
+        content_type="image/jpeg",
+        original_filename="IMG_6181.jpeg",
+        label="Royal Enfield GT650",
+        purpose="listing_photos",
+        status="ready",
+    )
+    assert model_facing_label(leaked) == "Photo"
+    assert model_facing_label(named) == "Royal Enfield GT650"
+
+
 def test_upload_notice_prefers_caption() -> None:
     item = AgentAttachment(
         id="a1",
         user_id="u1",
         session_id="s1",
         kind="file",
+        content_type="application/pdf",
         original_filename="resume.pdf",
-        label="resume.pdf",
+        label="Resume",
+        status="ready",
+    )
+    photo = AgentAttachment(
+        id="a2",
+        user_id="u1",
+        session_id="s1",
+        kind="file",
+        content_type="image/jpeg",
+        original_filename="IMG_6181.jpeg",
+        label="Photo",
         status="ready",
     )
     assert upload_notice([item], "Here is my CV") == "Here is my CV"
-    assert upload_notice([item], "") == "Uploaded a file: resume.pdf"
+    assert upload_notice([item], "") == "Uploaded a file."
+    assert upload_notice([photo], "") == "Uploaded a photo."
+    assert upload_notice([photo, photo], "") == "Uploaded 2 photos."
+    assert "resume.pdf" not in upload_notice([item], "")
+    assert "IMG_6181.jpeg" not in upload_notice([photo], "")
 
 
 def test_parse_structured_cards() -> None:
@@ -192,6 +251,45 @@ def test_gallery_title_collapses_numbered_photos() -> None:
         for index in (1, 2, 3)
     ]
     assert gallery_title(photos) == "Royal Enfield GT650"
+
+
+def test_gallery_title_ignores_device_filenames() -> None:
+    photos = [
+        AgentAttachment(
+            id=f"a{index}",
+            user_id="u1",
+            session_id="s1",
+            kind="file",
+            label=f"IMG_618{index}.jpeg",
+            original_filename=f"IMG_618{index}.jpeg",
+            content_type="image/jpeg",
+            purpose="listing_photos",
+            status="ready",
+        )
+        for index in (1, 2, 3)
+    ]
+    assert gallery_title(photos) == "Listing photos"
+    assert "IMG_618" not in gallery_title(photos)
+
+
+def test_share_card_item_omits_original_filename() -> None:
+    item = AgentAttachment(
+        id="a1",
+        user_id="u1",
+        session_id="s1",
+        kind="file",
+        label="IMG_6181.jpeg",
+        original_filename="IMG_6181.jpeg",
+        content_type="image/jpeg",
+        purpose="listing_photos",
+        share_class="public",
+        status="ready",
+    )
+    payload = _share_card_item(item)
+    assert "original_filename" not in payload
+    assert "filename" not in payload
+    assert payload["label"] == "Photo"
+    assert payload["id"] == "a1"
 
 
 async def test_memory_store_roundtrip() -> None:

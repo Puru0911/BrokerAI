@@ -133,6 +133,27 @@ export function IconMenu({ className }: IconProps) {
   )
 }
 
+export function IconChevronDown({ className }: IconProps) {
+  return (
+    <svg
+      width="16"
+      height="16"
+      viewBox="0 0 24 24"
+      fill="none"
+      aria-hidden="true"
+      className={className}
+    >
+      <path
+        d="M6 9l6 6 6-6"
+        stroke="currentColor"
+        strokeWidth="1.8"
+        strokeLinecap="round"
+        strokeLinejoin="round"
+      />
+    </svg>
+  )
+}
+
 export function IconLogout({ className }: IconProps) {
   return (
     <svg

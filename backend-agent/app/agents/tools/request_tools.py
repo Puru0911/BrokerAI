@@ -20,7 +20,7 @@ from app.db.models import AgentRequest
 from app.rag.indexer import index_request
 from app.services.living_request import apply_request_patch, living_request_from_model
 from app.services.privacy import json_result
-from app.services.titles import create_title
+from app.services.titles import generate_request_copy
 from app.services.workflow import REQUEST_OPEN, get_session_request, open_match_count
 
 logger = logging.getLogger(__name__)
@@ -117,8 +117,6 @@ class NoArgs(BaseModel):
 
 def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
     async def save_request(args: SaveRequestArgs) -> str:
-        title = create_title(args.objective) if args.objective.strip() else "New broker request"
-        summary = args.objective.strip()
         request = ctx.request or await get_session_request(ctx.db, ctx.session.id)
         details = {
             "objective": args.objective.strip(),
@@ -130,6 +128,7 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             "timeline": args.timeline.strip(),
             "freeform_notes": args.freeform_notes.strip(),
         }
+        title, summary = await generate_request_copy(details)
         if request is None:
             request = AgentRequest(
                 session_id=ctx.session.id,
@@ -176,11 +175,11 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             return json_result(ok=False, error="No fields to update.")
         details = apply_request_patch(request.details, patch)
         request.details = details
-        if details.get("objective"):
-            request.title = create_title(details["objective"])
-            request.summary = details["objective"]
-            ctx.session.title = request.title
-            ctx.session.summary = request.summary
+        title, summary = await generate_request_copy(details)
+        request.title = title
+        request.summary = summary
+        ctx.session.title = title
+        ctx.session.summary = summary
         if request.status != "closed":
             request.status = REQUEST_OPEN
         request.indexed_at = None

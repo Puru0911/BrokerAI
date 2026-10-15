@@ -10,6 +10,7 @@ from app.agents.context import (
     build_context_packet,
     focused_match_id,
     load_session_history,
+    reply_lane_id,
     resolve_session_role,
 )
 from app.agents.tools._common import adopt_focus_if_idle, resolve_match_id
@@ -56,6 +57,22 @@ def test_open_match_on_request_lane_adopts_focus_for_later_tools() -> None:
     assert ctx.focus_match_id == "match-new"
     adopt_focus_if_idle(ctx, "match-other")
     assert ctx.focus_match_id == "match-new"
+
+
+def test_reply_lane_stays_on_request_when_open_match_adopts_focus() -> None:
+    ctx = ToolContext(
+        db=AsyncMock(),
+        profile=SimpleNamespace(id="u1"),
+        session=AgentSession(id="s1", user_id="u1"),
+        request=_request(),
+        user_message=None,
+        trigger="user_message",
+        focus_match_id=None,
+    )
+    assert reply_lane_id(ctx) is None
+    adopt_focus_if_idle(ctx, "match-new")
+    assert ctx.focus_match_id == "match-new"
+    assert reply_lane_id(ctx) is None
 
 
 def test_match_id_defaults_off_the_focused_lane() -> None:
@@ -109,10 +126,46 @@ async def test_session_role_follows_focused_match_not_waiting_pointer() -> None:
 def test_lane_label_hides_identity_until_accept() -> None:
     other = _request(title="Designer in Pune", user_id="u2")
     profile = SimpleNamespace(name="Priya Sharma")
-    assert match_lane_label(other=other, other_profile=profile, identity_open=False) == "Designer in Pune"
-    assert match_lane_label(other=other, other_profile=profile, identity_open=True) == "Priya Sharma"
+    assert match_lane_label(other=other, other_profile=profile, identity_open=False) == "Housing · Baner"
+    assert match_lane_label(other=other, other_profile=profile, identity_open=True) == "Priya Sharma · Baner"
     unnamed = _request(title="New broker request", details={"domain": "housing", "location": "Aundh"})
-    assert match_lane_label(other=unnamed, other_profile=None, identity_open=False) == "housing · Aundh"
+    assert match_lane_label(other=unnamed, other_profile=None, identity_open=False) == "Housing · Aundh"
+
+
+def test_lane_label_prefers_brief_over_first_message_title() -> None:
+    other = _request(
+        title="Electrician in Pimple Nilakh to install 2 ceiling fans and re-configure...",
+        details={
+            "objective": "Electrician in Pimple Nilakh to install 2 ceiling fans and re-configure the whole flat",
+            "domain": "trades",
+            "location": "Pimple Nilakh, Pune",
+        },
+    )
+    assert match_lane_label(other=other, other_profile=None, identity_open=False) == "Trades · Pimple Nilakh"
+
+
+def test_lane_label_uses_short_objective_when_domain_is_missing() -> None:
+    other = _request(
+        title="New broker request",
+        details={
+            "objective": "Need a girls-only PG near Headagyewar Hospital from next month.",
+            "location": "Headagyewar",
+        },
+    )
+    assert match_lane_label(other=other, other_profile=None, identity_open=False) == (
+        "Need a girls-only PG… · Headagyewar"
+    )
+
+
+def test_lane_label_clips_long_title_fallback() -> None:
+    other = _request(
+        title="Find a girl looking for PG paying guest accommodation in Chatrapati Sambhaji Nagar",
+        details={},
+    )
+    label = match_lane_label(other=other, other_profile=None, identity_open=False)
+    assert label != other.title
+    assert "…" in label
+    assert len(label) <= 29
 
 
 def test_lane_summary_is_redacted() -> None:

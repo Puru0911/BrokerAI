@@ -35,6 +35,7 @@ import {
 } from "@/lib/api/broker"
 import { connectBrokerSocket } from "@/lib/chat-socket"
 import {
+  MAX_UPLOAD_FILES,
   filesToConnectionAttachments,
   filesToLocalAttachments,
   hydrateMessagesWithAttachments,
@@ -54,30 +55,16 @@ import { createSupabaseBrowserClient } from "@/lib/supabase/client"
 
 type BrokerChatProps = {
   initialAccessToken: string
+  userName: string
   userEmail: string
   notifyEmail?: boolean
 }
 
 const NEW_SESSION_THINKING = "new"
 
-let emptySessionBoot: {
-  token: string
-  promise: Promise<BrokerSessionDetail>
-} | null = null
-
-function ensureEmptyBrokerSession(token: string) {
-  if (!emptySessionBoot || emptySessionBoot.token !== token) {
-    const promise = createBrokerSession(token)
-    emptySessionBoot = { token, promise }
-    void promise.catch(() => {
-      if (emptySessionBoot?.promise === promise) emptySessionBoot = null
-    })
-  }
-  return emptySessionBoot.promise
-}
-
 export function BrokerChat({
   initialAccessToken,
+  userName,
   userEmail,
   notifyEmail = true
 }: BrokerChatProps) {
@@ -109,7 +96,6 @@ export function BrokerChat({
   const [bootLoading, setBootLoading] = useState(true)
   const [sessionLoading, setSessionLoading] = useState(false)
   const [connectionLoading, setConnectionLoading] = useState(false)
-  const [creatingSession, setCreatingSession] = useState(false)
   const [thinkingLanes, setThinkingLanes] = useState<Record<string, number>>(
     {}
   )
@@ -190,6 +176,7 @@ export function BrokerChat({
   const thinkingTurnRef = useRef(0)
   const thinkingLanesRef = useRef(thinkingLanes)
   thinkingLanesRef.current = thinkingLanes
+  const pendingReadMatchIdsRef = useRef(new Set<string>())
 
   useEffect(() => {
     const chatId = new URLSearchParams(window.location.search).get("chat")
@@ -271,6 +258,7 @@ export function BrokerChat({
           if (matchParam && lanes.some((lane) => lane.id === matchParam)) {
             setActiveMatchId(matchParam)
             activeMatchIdRef.current = matchParam
+            noteMatchRead(pendingReadMatchIdsRef.current, matchParam)
           }
           applySessionDetail(detail)
           if (matchParam && lanes.some((lane) => lane.id === matchParam)) {
@@ -278,18 +266,14 @@ export function BrokerChat({
           }
           setPendingMessages([])
         } else {
-          const detail = await ensureEmptyBrokerSession(token)
-          if (
-            activeSessionIdRef.current &&
-            activeSessionIdRef.current !== detail.session.id
-          ) {
-            return
-          }
-          setSessions([detail.session])
-          setActiveSessionId(detail.session.id)
-          activeSessionIdRef.current = detail.session.id
-          applySessionDetail(detail)
+          setActiveSessionId(null)
+          activeSessionIdRef.current = null
+          setActiveMatchId(null)
+          activeMatchIdRef.current = null
+          setMessages([])
+          setMatches([])
           setPendingMessages([])
+          setSessionQuery(null, null)
         }
       } catch (caughtError) {
         setError(
@@ -468,9 +452,10 @@ export function BrokerChat({
     const incoming = detail.matches ?? detail.session.matches ?? []
     const focused = incoming.find((lane) => lane.id === focus)
     if (focus && focused && focused.unread_count > 0 && accessToken) {
+      noteMatchRead(pendingReadMatchIdsRef.current, focus)
       void markBrokerMatchRead(accessToken, focus).catch(() => undefined)
     }
-    const lanes = zeroFocusedUnread(incoming, focus)
+    const lanes = applyLaneReadState(incoming, focus, pendingReadMatchIdsRef.current)
     setMatches(lanes)
     setSessions((current) =>
       current.map((session) =>
@@ -546,7 +531,11 @@ export function BrokerChat({
     setSessions(
       sessionList.map((session) => {
         if (session.id !== sessionId) return session
-        const lanes = zeroFocusedUnread(session.matches ?? [], focus)
+        const lanes = applyLaneReadState(
+          session.matches ?? [],
+          focus,
+          pendingReadMatchIdsRef.current
+        )
         return {
           ...session,
           matches: lanes,
@@ -585,35 +574,27 @@ export function BrokerChat({
     }
   }
 
-  async function handleCreateSession() {
-    if (!accessToken) return
+  function showDraftRequest() {
+    setActiveSessionId(null)
+    activeSessionIdRef.current = null
+    setActiveConnectionId(null)
+    activeConnectionIdRef.current = null
+    setActiveMatchId(null)
+    activeMatchIdRef.current = null
+    setMessages([])
+    setMatches([])
+    setPendingMessages([])
+    setComposerValue("")
+    setPendingFiles([])
+    setPendingLink("")
+    setDrawerOpen(false)
+    setSessionQuery(null, null)
+  }
 
+  function handleCreateSession() {
+    if (!accessToken) return
     setError(null)
-    setCreatingSession(true)
-    try {
-      const detail = await createBrokerSession(accessToken)
-      setSessions((currentSessions) => [detail.session, ...currentSessions])
-      setActiveSessionId(detail.session.id)
-      activeSessionIdRef.current = detail.session.id
-      setActiveConnectionId(null)
-      setActiveMatchId(null)
-      activeMatchIdRef.current = null
-      applySessionDetail(detail)
-      setPendingMessages([])
-      setComposerValue("")
-      setPendingFiles([])
-      setPendingLink("")
-      setDrawerOpen(false)
-      setSessionQuery(detail.session.id, null)
-    } catch (caughtError) {
-      setError(
-        caughtError instanceof Error
-          ? caughtError.message
-          : "Could not create a new session."
-      )
-    } finally {
-      setCreatingSession(false)
-    }
+    showDraftRequest()
   }
 
   async function openBrokerSession(sessionId: string, matchId: string | null) {
@@ -642,6 +623,7 @@ export function BrokerChat({
       setActiveSessionId(detail.session.id)
       applySessionDetail(detail)
       if (matchId) {
+        noteMatchRead(pendingReadMatchIdsRef.current, matchId)
         await markBrokerMatchRead(accessToken, matchId).catch(() => undefined)
       }
     } catch (caughtError) {
@@ -681,8 +663,13 @@ export function BrokerChat({
     setPendingLink("")
     setDrawerOpen(false)
     setSessionQuery(sessionId, matchId)
+    noteMatchRead(pendingReadMatchIdsRef.current, matchId)
     setMatches((current) => {
-      const lanes = zeroFocusedUnread(current, matchId)
+      const lanes = applyLaneReadState(
+        current,
+        matchId,
+        pendingReadMatchIdsRef.current
+      )
       setSessions((sessions) =>
         sessions.map((session) =>
           session.id === sessionId
@@ -759,7 +746,7 @@ export function BrokerChat({
     ])
     let sessionId = activeSessionId
     const thinkingTurn = ++thinkingTurnRef.current
-    beginLaneThinking(sessionId, sentMatchId, thinkingTurn)
+    beginLaneThinking(sessionId ?? NEW_SESSION_THINKING, sentMatchId, thinkingTurn)
 
     try {
       if (!sessionId) {
@@ -839,6 +826,7 @@ export function BrokerChat({
       dropPendingMessage(optimisticMessage.id)
       endLaneThinking(sessionId, sentMatchId, thinkingTurn)
       if (sentMatchId) {
+        noteMatchRead(pendingReadMatchIdsRef.current, sentMatchId)
         await markBrokerMatchRead(accessToken, sentMatchId).catch(() => undefined)
       }
       await refreshSessions(accessToken)
@@ -944,22 +932,28 @@ export function BrokerChat({
     }
   }
 
-  async function handleRequestUpload(requestId: string, file: File) {
-    if (!accessToken || !activeSessionId) return
+  async function handleRequestUpload(requestId: string, files: File[]) {
+    if (!accessToken || !activeSessionId || files.length === 0) return
     const sessionId = activeSessionId
+    const batch = files.slice(0, MAX_UPLOAD_FILES)
     setError(null)
     setUploadingRequestId(requestId)
-    const localAttachments = filesToLocalAttachments([file], sessionId)
+    const localAttachments = filesToLocalAttachments(batch, sessionId)
     const sentMatchId = activeMatchIdRef.current
     let thinkingTurn: number | null = null
     let optimisticId: string | null = null
     try {
-      const uploaded = await uploadBrokerAttachment(
-        accessToken,
-        sessionId,
-        file,
-        { requestId }
-      )
+      const uploadedIds: string[] = []
+      for (const file of batch) {
+        const uploaded = await uploadBrokerAttachment(
+          accessToken,
+          sessionId,
+          file,
+          { requestId }
+        )
+        uploadedIds.push(uploaded.id)
+      }
+      if (!uploadedIds.length) return
       setUploadingRequestId(null)
       thinkingTurn = ++thinkingTurnRef.current
       beginLaneThinking(sessionId, sentMatchId, thinkingTurn)
@@ -978,7 +972,7 @@ export function BrokerChat({
         accessToken,
         sessionId,
         "",
-        [uploaded.id],
+        uploadedIds,
         sentMatchId
       )
       if (activeSessionIdRef.current === sessionId) {
@@ -1070,7 +1064,6 @@ export function BrokerChat({
     setDeletingSessionId(sessionId)
     try {
       await deleteBrokerSession(accessToken, sessionId)
-      if (emptySessionBoot) emptySessionBoot = null
       const remaining = sessions.filter((session) => session.id !== sessionId)
       setSessions(remaining)
 
@@ -1087,19 +1080,7 @@ export function BrokerChat({
           applySessionDetail(detail)
           setSessionQuery(detail.session.id, null)
         } else {
-          const detail = await ensureEmptyBrokerSession(accessToken)
-          if (
-            activeSessionIdRef.current &&
-            activeSessionIdRef.current !== sessionId &&
-            activeSessionIdRef.current !== detail.session.id
-          ) {
-            return
-          }
-          setSessions([detail.session])
-          setActiveSessionId(detail.session.id)
-          activeSessionIdRef.current = detail.session.id
-          applySessionDetail(detail)
-          setSessionQuery(detail.session.id, null)
+          showDraftRequest()
         }
       }
     } catch (caughtError) {
@@ -1198,19 +1179,19 @@ export function BrokerChat({
       ? `${formatLaneStatus(activeMatch)} · ${activeSession?.title ?? "Request"}`
       : liveMatchCount
         ? `${liveMatchCount} match${liveMatchCount === 1 ? "" : "es"} in progress`
-        : (activeSession?.status ?? "intake")
+        : (activeSession?.status ?? "Start with a message")
 
   return (
     <main className="flex h-screen overflow-hidden bg-canvas text-ink">
       <SessionSidebar
         open={drawerOpen}
+        userName={userName}
         userEmail={userEmail}
         sessions={sessions}
         connections={connections}
         activeSessionId={activeSessionId}
         activeMatchId={activeMatchId}
         activeConnectionId={activeConnectionId}
-        creatingSession={creatingSession}
         deletingSessionId={deletingSessionId}
         onCreateSession={() => void handleCreateSession()}
         onSelectSession={(sessionId) => void handleSelectSession(sessionId)}
@@ -1245,7 +1226,7 @@ export function BrokerChat({
               <button
                 type="button"
                 onClick={() => handleOpenChat(activeMatch.id)}
-                className="h-9 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-[#0c4d48]"
+                className="h-9 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-accent-hover"
               >
                 Open chat
               </button>
@@ -1277,7 +1258,7 @@ export function BrokerChat({
                 type="button"
                 onClick={() => void handleEnableNotifications()}
                 disabled={notifyBusy}
-                className="h-8 rounded-lg bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
+                className="h-8 rounded-lg bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-accent-hover disabled:opacity-50"
               >
                 {notifyBusy ? "Enabling…" : "Enable"}
               </button>
@@ -1317,8 +1298,8 @@ export function BrokerChat({
               onConnect: (matchId) => void handleConnect(matchId),
               onOpenChat: handleOpenChat,
               uploadingRequestId,
-              onRequestUpload: (requestId, file) =>
-                void handleRequestUpload(requestId, file),
+              onRequestUpload: (requestId, files) =>
+                void handleRequestUpload(requestId, files),
               grantingAttachmentId,
               onGrant: (attachmentId, matchId, granted) =>
                 void handleGrant(attachmentId, matchId, granted)
@@ -1371,7 +1352,7 @@ export function BrokerChat({
                   onClick={() =>
                     void handleIntroduction(laneConnectOffer.match_id, "accept")
                   }
-                  className="h-9 flex-1 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-[#0c4d48] disabled:opacity-50"
+                  className="h-9 flex-1 rounded-xl bg-accent px-3 text-xs font-semibold text-surface transition hover:bg-accent-hover disabled:opacity-50"
                 >
                   {introducingMatchId === laneConnectOffer.match_id
                     ? "Working…"
@@ -1439,10 +1420,28 @@ function laneKey(
   return `${sessionId ?? NEW_SESSION_THINKING}:${matchId || "request"}`
 }
 
-function zeroFocusedUnread(lanes: BrokerMatchLane[], focus: string | null) {
-  return lanes.map((lane) =>
-    focus && lane.id === focus ? { ...lane, unread_count: 0 } : lane
-  )
+function noteMatchRead(
+  pendingRead: Set<string>,
+  matchId: string | null | undefined
+) {
+  if (matchId) pendingRead.add(matchId)
+}
+
+function applyLaneReadState(
+  lanes: BrokerMatchLane[],
+  focus: string | null,
+  pendingRead: Set<string>
+) {
+  return lanes.map((lane) => {
+    if (lane.unread_count === 0) {
+      pendingRead.delete(lane.id)
+      return lane
+    }
+    if ((focus && lane.id === focus) || pendingRead.has(lane.id)) {
+      return { ...lane, unread_count: 0 }
+    }
+    return lane
+  })
 }
 
 function matchUnreadTotal(lanes: BrokerMatchLane[]) {
@@ -1454,12 +1453,6 @@ function laneAlert(match: BrokerMatchLane) {
     return {
       title: `${match.label} is ready to be introduced`,
       detail: "Open that match to continue."
-    }
-  }
-  if (match.waiting) {
-    return {
-      title: `The broker needs you on ${match.label}`,
-      detail: "Open that match to reply."
     }
   }
   if (match.unread_count > 0) {

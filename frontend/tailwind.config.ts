@@ -14,6 +14,7 @@ export default {
         line: token("--line"),
         accent: {
           DEFAULT: token("--accent"),
+          hover: token("--accent-hover"),
           soft: token("--accent-soft")
         },
         user: token("--user"),

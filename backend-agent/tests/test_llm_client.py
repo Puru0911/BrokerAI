@@ -41,7 +41,7 @@ def test_build_chat_model_uses_chatgroq_with_parsed_reasoning(
     assert kwargs["reasoning_format"] == "parsed"
     assert kwargs["reasoning_effort"] == "low"
     assert kwargs["max_tokens"] == 2048
-    assert kwargs["model_kwargs"] == {"top_p": 0.95}
+    assert kwargs["model_kwargs"] == {"top_p": 0.85}
     assert "base_url" not in kwargs
 
 
@@ -76,7 +76,8 @@ def test_build_broker_chat_model_uses_thinking_sampling_on_groq(
         build_broker_chat_model()
 
     kwargs = mock_cls.call_args.kwargs
-    assert kwargs["temperature"] == 1.0
+    assert kwargs["temperature"] == 0.4
+    assert kwargs["model_kwargs"] == {"top_p": 0.85}
     assert kwargs["reasoning_format"] == "parsed"
     assert kwargs["reasoning_effort"] == "low"
 
@@ -129,7 +130,7 @@ def test_build_chat_model_openrouter_uses_chat_openrouter_with_reasoning(
         "exclude": False,
     }
     assert kwargs["timeout"] == 60_000
-    assert kwargs["top_p"] == 0.95
+    assert kwargs["top_p"] == 0.85
     assert kwargs["app_title"] == "BrokerAI"
     assert kwargs["app_url"] == settings.public_app_url
     assert "reasoning_format" not in kwargs
@@ -229,6 +230,45 @@ async def test_invoke_structured_model_keeps_reasoning(
     assert kwargs["reasoning"]["effort"] == "medium"
 
 
+@pytest.mark.asyncio
+async def test_invoke_structured_model_can_skip_reasoning(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openrouter")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(settings, "LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    monkeypatch.setattr(settings, "OPENROUTER_REASONING_ENABLED", True)
+
+    from pydantic import BaseModel, Field
+
+    class Copy(BaseModel):
+        title: str = Field(min_length=1)
+        summary: str = Field(min_length=1)
+
+    fake = MagicMock()
+    fake.bind.return_value = fake
+    fake.ainvoke = AsyncMock(
+        return_value=MagicMock(
+            content='{"title": "1BHK in Baner", "summary": "Looking for a 1BHK in Baner."}'
+        )
+    )
+    with patch("app.llm.client.ChatOpenRouter", return_value=fake) as openrouter_cls:
+        copy = await invoke_structured_model(
+            parser_model=Copy,
+            system_prompt="Return JSON.",
+            human_payload={"objective": "1BHK Baner"},
+            temperature=0.1,
+            max_tokens=400,
+            use_reasoning=False,
+        )
+
+    assert copy.title == "1BHK in Baner"
+    kwargs = openrouter_cls.call_args.kwargs
+    assert "reasoning" not in kwargs
+    assert "top_p" not in kwargs
+    assert kwargs["max_tokens"] == 400
+
+
 def test_build_chat_model_openrouter_omits_reasoning_when_disabled(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -261,8 +301,9 @@ def test_build_broker_chat_model_uses_thinking_sampling_on_openrouter(
         build_broker_chat_model()
 
     kwargs = openrouter_cls.call_args.kwargs
-    assert kwargs["temperature"] == 1.0
-    assert kwargs["max_tokens"] == 4096
+    assert kwargs["temperature"] == 0.4
+    assert kwargs["top_p"] == 0.85
+    assert kwargs["max_tokens"] == 2048
     assert kwargs["reasoning"]["effort"] == "medium"
 
 

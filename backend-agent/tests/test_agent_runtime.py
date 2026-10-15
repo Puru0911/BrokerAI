@@ -520,6 +520,69 @@ async def test_run_broker_turn_does_not_republish_prior_chat(
     assert db.add.call_count == 1
 
 
+async def test_open_match_from_request_lane_leaves_an_update_then_starts_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.agents import runtime as runtime_mod
+    from app.agents.context import ToolContext
+    from app.agents.prompts import REQUEST_LANE_OPENED_MATCH_REPLY
+    from app.agents.tools._common import adopt_focus_if_idle
+
+    kickoff = (
+        "I found a counterpart who may fit. I'm reaching out to confirm a few details."
+    )
+
+    async def fake_loop(_llm, _tools, messages, **_kwargs):
+        adopt_focus_if_idle(ctx, "match-new")
+        ctx.opened_match_ids.append("match-new")
+        start = len(messages)
+        messages.append(AIMessage(content=kickoff))
+        return messages, kickoff, collect_turn_replies(messages, start=start)
+
+    async def fake_packet(_ctx):
+        return {"SESSION_ROLE": "source", "open_matches": [], "attention_pointer": "idle"}
+
+    async def fake_history(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(runtime_mod, "run_tool_loop", fake_loop)
+    monkeypatch.setattr(runtime_mod, "build_context_packet", fake_packet)
+    monkeypatch.setattr(runtime_mod, "load_session_history", fake_history)
+    monkeypatch.setattr(runtime_mod, "build_turn_human_content", lambda *_a, **_k: "human")
+    monkeypatch.setattr(runtime_mod, "inline_history_in_packet", lambda _trigger: False)
+    monkeypatch.setattr(
+        runtime_mod, "llm_runtime_info", lambda: {"provider": "test", "model": "x"}
+    )
+
+    added: list[AgentMessage] = []
+
+    def capture(obj) -> None:
+        if isinstance(obj, AgentMessage):
+            added.append(obj)
+
+    db = MagicMock()
+    db.add = MagicMock(side_effect=capture)
+    db.flush = AsyncMock()
+    session = MagicMock()
+    session.id = "sess-1"
+    ctx = ToolContext(
+        db=db,
+        profile=MagicMock(),
+        session=session,
+        request=None,
+        user_message=None,
+        trigger="user_message",
+        focus_match_id=None,
+    )
+    replies = await runtime_mod.run_broker_turn(ctx, llm=object(), tools=[])
+    assert [message.match_id for message in replies] == [None, "match-new"]
+    assert replies[0].content == REQUEST_LANE_OPENED_MATCH_REPLY
+    assert replies[1].content == kickoff
+    assert [message.match_id for message in added] == [None, "match-new"]
+
+
 def test_looks_like_process_dump_detects_tool_narration() -> None:
     assert looks_like_process_dump("I called save_request and then search_counterparties.")
     assert looks_like_process_dump("First I'll index the brief, then I'll evaluate pairs.")
@@ -609,9 +672,9 @@ def test_new_uploads_are_listed_without_forcing_a_tool() -> None:
         "open_matches": [],
         "recent_events": [],
         "attention_pointer": "idle",
-        "attachments": [{"id": "a1"}],
-        "new_uploads": [{"id": "a1", "filename": "IMG_6181.jpeg"}],
-        "current_user_message": "Uploaded a file: IMG_6181.jpeg",
+        "attachments": [{"id": "a1", "label": "Photo", "content_type": "image/jpeg"}],
+        "new_uploads": [{"id": "a1", "label": "Photo", "content_type": "image/jpeg"}],
+        "current_user_message": "Uploaded a photo.",
     }
     human = build_turn_human_content(
         packet,
@@ -619,6 +682,8 @@ def test_new_uploads_are_listed_without_forcing_a_tool() -> None:
         history=[],
         inline_history=False,
     )
-    assert "IMG_6181.jpeg" in human
+    assert "Uploaded a photo." in human
+    assert "IMG_6181.jpeg" not in human
+    assert "filename" not in human
     assert "Classify each item this turn" not in human
     assert "new_uploads is non-empty" not in human

@@ -12,7 +12,7 @@ export function Button(
   const { className, variant = "primary", ...rest } = props
   const variants: Record<Variant, string> = {
     primary:
-      "bg-accent text-surface hover:bg-[#0c4d48] shadow-sm",
+      "bg-accent text-surface hover:bg-accent-hover shadow-sm",
     secondary:
       "border border-line bg-surface text-ink hover:bg-black/[0.03]",
     ghost: "bg-transparent text-ink hover:bg-black/[0.04]",

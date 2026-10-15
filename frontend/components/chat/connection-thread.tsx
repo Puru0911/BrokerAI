@@ -3,6 +3,7 @@
 import { useLayoutEffect, useRef, type RefObject } from "react"
 
 import { AttachmentStack } from "@/components/chat/attachment-cards"
+import { ChatText } from "@/components/chat/chat-text"
 import { ThreadSkeleton } from "@/components/chat/thread-skeleton"
 import { cn } from "@/lib/cn"
 import type { ConnectionMessage } from "@/lib/api/broker"
@@ -95,7 +96,7 @@ function ConnectionBubble({
       >
         {message.content ? (
           <div className="whitespace-pre-wrap break-words [overflow-wrap:anywhere]">
-            {message.content}
+            <ChatText text={message.content} />
           </div>
         ) : null}
         {attachments.length > 0 ? (

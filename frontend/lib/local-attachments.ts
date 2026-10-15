@@ -4,6 +4,8 @@ import type {
   ConnectionAttachment
 } from "@/lib/api/broker"
 
+export const MAX_UPLOAD_FILES = 10
+
 const URL_RE = /https?:\/\/[^\s<>"']+/gi
 
 export function extractUrls(text: string): string[] {
@@ -13,6 +15,14 @@ export function extractUrls(text: string): string[] {
     if (cleaned && !found.includes(cleaned)) found.push(cleaned)
   }
   return found
+}
+
+function genericLocalLabel(contentType: string | null): string {
+  const type = (contentType || "").toLowerCase()
+  if (type.startsWith("image/")) return "Photo"
+  if (type === "application/pdf") return "PDF"
+  if (type.includes("word")) return "Document"
+  return "File"
 }
 
 export function filesToConnectionAttachments(
@@ -36,22 +46,25 @@ export function filesToLocalAttachments(
   files: File[],
   sessionId: string | null
 ): BrokerAttachment[] {
-  return files.map((file, index) => ({
-    id: `local-file-${Date.now()}-${index}`,
-    session_id: sessionId ?? "local",
-    kind: "file",
-    share_class: "pending",
-    label: file.name,
-    purpose: null,
-    original_filename: file.name,
-    content_type: file.type || guessContentType(file.name),
-    size_bytes: file.size,
-    url: null,
-    content_url: URL.createObjectURL(file),
-    description: null,
-    status: "ready",
-    created_at: new Date().toISOString()
-  }))
+  return files.map((file, index) => {
+    const contentType = file.type || guessContentType(file.name)
+    return {
+      id: `local-file-${Date.now()}-${index}`,
+      session_id: sessionId ?? "local",
+      kind: "file",
+      share_class: "pending",
+      label: genericLocalLabel(contentType),
+      purpose: null,
+      original_filename: file.name,
+      content_type: contentType,
+      size_bytes: file.size,
+      url: null,
+      content_url: URL.createObjectURL(file),
+      description: null,
+      status: "ready",
+      created_at: new Date().toISOString()
+    }
+  })
 }
 
 export function linkToLocalAttachment(

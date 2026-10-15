@@ -50,7 +50,7 @@ export function ContactCard({
         <button
           type="button"
           onClick={onOpenChat}
-          className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48]"
+          className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-accent-hover"
         >
           Open chat
         </button>
@@ -59,7 +59,7 @@ export function ContactCard({
           type="button"
           disabled={connecting}
           onClick={onConnect}
-          className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
+          className="h-10 w-full rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
         >
           {connecting ? "Connecting…" : "Connect"}
         </button>
@@ -119,7 +119,7 @@ export function ConnectOfferCard({
           type="button"
           disabled={busy}
           onClick={onAccept}
-          className="h-10 flex-1 rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-[#0c4d48] disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
+          className="h-10 flex-1 rounded-xl bg-accent px-4 text-sm font-semibold text-surface transition hover:bg-accent-hover disabled:cursor-not-allowed disabled:bg-line disabled:text-muted"
         >
           {busy ? "Working…" : "Introduce us"}
         </button>

@@ -24,7 +24,7 @@ from app.services.attachments import (
 )
 from app.db.models.broker import utc_now
 from app.services.match_lanes import require_request_match
-from app.services.titles import WELCOME_MESSAGE, create_title
+from app.services.titles import create_title, welcome_message
 from app.services.workflow import (
     MATCH_OPEN,
     add_event,
@@ -71,7 +71,7 @@ async def create_session_with_agent(
         welcome = AgentMessage(
             session_id=session.id,
             role="assistant",
-            content=WELCOME_MESSAGE,
+            content=welcome_message(),
         )
         db.add(welcome)
         await db.flush()
@@ -256,7 +256,7 @@ async def _run_turn_safely(ctx: ToolContext) -> list[AgentMessage]:
             "I hit a problem continuing this request. Please try that last "
             "message again in a moment."
         ),
-        match_id=ctx.focus_match_id or ctx.trigger_match_id,
+        match_id=ctx.reply_match_id,
     )
     ctx.db.add(fallback)
     await ctx.db.flush()

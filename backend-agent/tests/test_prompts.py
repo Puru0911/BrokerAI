@@ -156,6 +156,9 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
     assert "tool names" in speak
     assert "verdicts" in speak
     assert "recap their brief" in speak
+    assert "language this person last used" in speak
+    small_speak = BROKER_SYSTEM_PROMPT_DEV.split("== HOW YOU SPEAK ==")[1].split("==")[0].lower()
+    assert "language this person last used" in small_speak
     work = BROKER_SYSTEM_PROMPT_FULL.split("== HOW YOU WORK ==")[1].split("==")[0].lower()
     assert "optional, not mandatory" in work
     assert "never treat a skipped question as a stop" in work
@@ -185,6 +188,8 @@ def test_tools_describe_effects_not_sequences() -> None:
     assert "both sides" in TOOL_SHARE_CONTACTS_FULL.lower()
     assert "upload control" in TOOL_REQUEST_ATTACHMENT_FULL.lower()
     assert "conversation" in TOOL_CLASSIFY_ATTACHMENT_FULL.lower()
+    assert "file type" in TOOL_CLASSIFY_ATTACHMENT_FULL.lower()
+    assert "filename" not in TOOL_CLASSIFY_ATTACHMENT_FULL.lower()
     assert "personal" in TOOL_SHARE_ATTACHMENT_FULL.lower()
     assert "gallery" in TOOL_SHARE_ATTACHMENT_FULL.lower()
     assert "attachment_ids" in TOOL_SHARE_ATTACHMENT_FULL
@@ -221,6 +226,7 @@ def test_tools_describe_effects_not_sequences() -> None:
 def test_user_message_instruction_is_a_reply_brief() -> None:
     lowered = USER_MESSAGE_INSTRUCTION.lower()
     assert "ordinary language" in lowered
+    assert "same language they used" in lowered
     assert "tool" in lowered
     assert "classify" not in lowered
     assert "accept_match" not in lowered

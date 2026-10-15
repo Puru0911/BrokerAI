@@ -9,10 +9,27 @@
   --muted: 111 105 98;
   --line: 230 225 216;
   --accent: 15 92 86;
+  --accent-hover: 12 77 72;
   --accent-soft: 228 241 238;
   --user: 26 25 22;
   --danger: 163 59 43;
   --danger-soft: 248 235 231;
+  --scrollbar: 212 206 196;
+}
+
+html[data-theme="poster"] {
+  --canvas: 245 245 251;
+  --surface: 255 255 255;
+  --ink: 22 22 42;
+  --muted: 107 107 134;
+  --line: 228 228 240;
+  --accent: 91 90 237;
+  --accent-hover: 71 68 212;
+  --accent-soft: 236 236 255;
+  --user: 31 30 48;
+  --danger: 186 64 80;
+  --danger-soft: 252 232 236;
+  --scrollbar: 196 196 214;
 }
 
 html,
@@ -32,7 +49,7 @@ body {
 
 .scrollbar-thin {
   scrollbar-width: thin;
-  scrollbar-color: rgb(212 206 196) transparent;
+  scrollbar-color: rgb(var(--scrollbar)) transparent;
 }
 
 .scrollbar-thin::-webkit-scrollbar {
@@ -41,7 +58,7 @@ body {
 }
 
 .scrollbar-thin::-webkit-scrollbar-thumb {
-  background: rgb(212 206 196);
+  background: rgb(var(--scrollbar));
   border-radius: 999px;
   border: 2px solid transparent;
   background-clip: padding-box;

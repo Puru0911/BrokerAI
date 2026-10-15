@@ -14,6 +14,7 @@ class Settings(BaseSettings):
     )
 
     APP_NAME: str = "BrokerAI"
+    AGENT_NAME: str = "BrokerAI"
     ENV: str = "local"
     PUBLIC_APP_URL: str | None = None
     CORS_ORIGINS: list[str] = [
@@ -109,6 +110,11 @@ class Settings(BaseSettings):
     @property
     def is_production(self) -> bool:
         return (self.ENV or "").strip().lower() in {"production", "prod"}
+
+    @property
+    def agent_name(self) -> str:
+        name = (self.AGENT_NAME or self.APP_NAME or "BrokerAI").strip()
+        return name or "BrokerAI"
 
     @property
     def mail_from_name(self) -> str:

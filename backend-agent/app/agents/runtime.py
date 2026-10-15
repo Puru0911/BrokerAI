@@ -14,13 +14,15 @@ from app.agents.context import (
     build_context_packet,
     focused_match_id,
     load_session_history,
+    reply_lane_id,
 )
-from app.db.models.broker import utc_now
 from app.agents.prompts import (
     BROKER_SYSTEM_PROMPT,
     MATCH_CONTEXT_INSTRUCTION,
     MATCH_TIMEOUT_INSTRUCTION,
     NATURAL_FALLBACK_REPLY,
+    REQUEST_LANE_OPENED_MATCH_REPLY,
+    REQUEST_LANE_OPENED_MATCHES_REPLY,
     REQUEST_READY_INSTRUCTION,
     UNAVAILABLE_REPLY,
     USER_MESSAGE_INSTRUCTION,
@@ -30,9 +32,25 @@ from app.agents.tools.registry import build_broker_tools
 from app.core.config import settings
 from app.core.logging import clip
 from app.db.models import AgentMessage
+from app.db.models.broker import utc_now
 from app.llm.client import build_broker_chat_model, is_llm_configured, llm_runtime_info
 
 logger = logging.getLogger(__name__)
+
+
+async def _persist_assistant_reply(
+    ctx: ToolContext, text: str, *, match_id: str | None
+) -> AgentMessage:
+    message = AgentMessage(
+        session_id=ctx.session.id,
+        role="assistant",
+        content=text,
+        match_id=match_id,
+    )
+    ctx.db.add(message)
+    await ctx.db.flush()
+    ctx.track(message)
+    return message
 
 
 def _tool_status(result: str) -> str:
@@ -247,8 +265,10 @@ def build_turn_human_content(
     if outreach:
         parts.extend(
             [
-                "outreach_context (why this turn exists; what this person needs "
-                "to hear or answer):",
+                (
+                    "outreach_context (why this turn exists; what this person needs "
+                    "to hear or answer):"
+                ),
                 str(outreach),
                 "",
             ]
@@ -505,7 +525,7 @@ async def run_broker_turn(
             session_id=ctx.session.id,
             role="assistant",
             content=UNAVAILABLE_REPLY,
-            match_id=focused_match_id(ctx),
+            match_id=reply_lane_id(ctx),
         )
         ctx.db.add(message)
         await ctx.db.flush()
@@ -577,16 +597,21 @@ async def run_broker_turn(
             replies = [final_text]
 
     lane_id = focused_match_id(ctx)
-    for text in replies:
-        assistant = AgentMessage(
-            session_id=ctx.session.id,
-            role="assistant",
-            content=text,
-            match_id=lane_id,
+    opened_from_request = reply_lane_id(ctx) is None and lane_id is not None
+    already_on_request = any(
+        message.role == "assistant" and not message.match_id
+        for message in ctx.current_user_messages
+    )
+    if opened_from_request and not already_on_request:
+        count = len(ctx.opened_match_ids) or 1
+        ack = (
+            REQUEST_LANE_OPENED_MATCHES_REPLY
+            if count > 1
+            else REQUEST_LANE_OPENED_MATCH_REPLY
         )
-        ctx.db.add(assistant)
-        await ctx.db.flush()
-        ctx.track(assistant)
+        await _persist_assistant_reply(ctx, ack, match_id=None)
+    for text in replies:
+        await _persist_assistant_reply(ctx, text, match_id=lane_id)
     ctx.session.updated_at = utc_now()
 
     logger.info(

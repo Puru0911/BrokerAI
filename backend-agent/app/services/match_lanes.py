@@ -36,6 +36,10 @@ from app.services.workflow import (
 )
 
 LIVE_LANE_STATUSES = {MATCH_OPEN, MATCH_ACCEPTED, MATCH_CONNECTED}
+_GENERIC_TITLES = {"new broker request", "new request", "possible match"}
+_HEAD_LIMIT = 28
+_PLACE_LIMIT = 24
+_TRAILING_GLUE = {"a", "an", "and", "at", "for", "from", "in", "near", "of", "or", "the", "to", "with"}
 
 
 class MatchLaneError(ValueError):
@@ -66,17 +70,68 @@ def match_lane_label(
     other_profile: UserProfile | None,
     identity_open: bool,
 ) -> str:
-    if identity_open and other_profile and (other_profile.name or "").strip():
-        return other_profile.name.strip()
-    title = (other.title or "").strip()
-    if title and title.lower() not in {"new broker request", "new request"}:
-        return title
+    """Compact tab title for a counterpart. Prefer living brief over the session title dump."""
     living = living_request_dict(other.details)
-    domain = (living.get("domain") or "").strip()
-    location = (living.get("location") or "").strip()
-    if domain and location:
-        return f"{domain} · {location}"
-    return domain or location or "Possible match"
+    location = _short_place(redact_identity((living.get("location") or "").strip()))
+    domain = redact_identity((living.get("domain") or "").strip())
+    objective = redact_identity((living.get("objective") or "").strip())
+    head = _display_domain(domain) if domain else _short_phrase(objective, _HEAD_LIMIT)
+
+    if identity_open and other_profile and (other_profile.name or "").strip():
+        name = other_profile.name.strip()
+        return f"{name} · {location}" if location else name
+    if head and location:
+        return f"{head} · {location}"
+    if head:
+        return head
+    if location:
+        return location
+    title = (other.title or "").strip()
+    if title and title.lower() not in _GENERIC_TITLES:
+        return _short_phrase(redact_identity(title), _HEAD_LIMIT)
+    return "Possible match"
+
+
+def _short_place(location: str) -> str:
+    text = location.strip()
+    if "," in text:
+        first = text.split(",", 1)[0].strip()
+        if len(first) >= 3:
+            text = first
+    return _short_phrase(text, _PLACE_LIMIT)
+
+
+def _display_domain(domain: str) -> str:
+    text = " ".join(domain.replace("_", " ").replace("-", " ").split())
+    if text.islower() or text.isupper():
+        text = text.title()
+    return _short_phrase(text, _HEAD_LIMIT)
+
+
+def _short_phrase(text: str, limit: int) -> str:
+    compact = " ".join((text or "").split())
+    if not compact:
+        return ""
+    for sep in (". ", "? ", "! ", "; "):
+        head, _, rest = compact.partition(sep)
+        if rest and 8 <= len(head) < len(compact):
+            compact = head
+            break
+    if len(compact) <= limit:
+        return compact
+    window = compact[:limit]
+    if " " in window:
+        clipped = window.rsplit(" ", 1)[0].rstrip(" .,;:-")
+    else:
+        clipped = window.rstrip(" .,;:-")
+    if not clipped:
+        clipped = window.rstrip(" .,;:-")
+    words = clipped.split()
+    while words and words[-1].lower() in _TRAILING_GLUE:
+        words.pop()
+    if words:
+        clipped = " ".join(words)
+    return f"{clipped}…"
 
 
 def match_lane_summary(other: AgentRequest) -> str:

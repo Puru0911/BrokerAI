@@ -19,6 +19,12 @@ from app.core.config import settings
 # JSON tool_calls. ChatOpenAI does not send that Groq field.
 _GROQ_REASONING_MARKERS = ("qwen/", "qwen3", "gpt-oss", "minimax")
 
+# Broker chat sampling. Stay inside 0.3–0.5 / 0.8–0.9 so multilingual
+# Qwen/OpenRouter turns follow the user's language more reliably than the
+# thinking-mode 1.0 / 0.95 recipe.
+_BROKER_TEMPERATURE = 0.4
+_BROKER_TOP_P = 0.85
+
 
 @dataclass(frozen=True)
 class LLMRuntimeConfig:
@@ -150,12 +156,12 @@ def build_broker_chat_model() -> BaseChatModel:
     provider = resolve_llm_runtime_config().provider
     if provider == "groq":
         return build_chat_model(
-            temperature=1.0,
+            temperature=_BROKER_TEMPERATURE,
             max_tokens=settings.GROQ_MAX_COMPLETION_TOKENS,
         )
     if provider == "openrouter" and openrouter_reasoning_config() is not None:
-        return build_chat_model(temperature=1.0, max_tokens=2048)
-    return build_chat_model(temperature=0.35, max_tokens=4096)
+        return build_chat_model(temperature=_BROKER_TEMPERATURE, max_tokens=2048)
+    return build_chat_model(temperature=_BROKER_TEMPERATURE, max_tokens=4096)
 
 
 def _build_groq_chat_model(
@@ -181,7 +187,7 @@ def _build_groq_chat_model(
         kwargs["reasoning_format"] = "parsed"
         kwargs["reasoning_effort"] = effort
         if effort != "none":
-            kwargs["model_kwargs"] = {"top_p": 0.95}
+            kwargs["model_kwargs"] = {"top_p": _BROKER_TOP_P}
     return ChatGroq(**kwargs)
 
 
@@ -212,7 +218,7 @@ def _build_openrouter_chat_model(
         # Full OpenRouter object (enabled/effort/exclude). The SDK currently
         # serializes effort/summary; omit this dict entirely when the toggle is off.
         kwargs["reasoning"] = reasoning
-        kwargs["top_p"] = 0.95
+        kwargs["top_p"] = _BROKER_TOP_P
     return ChatOpenRouter(**kwargs)
 
 
@@ -273,15 +279,19 @@ async def invoke_structured_model(
     system_prompt: str,
     human_payload: dict[str, Any],
     temperature: float,
+    max_tokens: int = 2000,
+    use_reasoning: bool = True,
 ) -> Any:
     """Call the chat model with a strict JSON / Pydantic contract."""
     if not is_llm_configured():
         raise RuntimeError(llm_configuration_error())
 
     parser = PydanticOutputParser(pydantic_object=parser_model)
-    llm = build_chat_model(temperature=temperature, max_tokens=2000).bind(
-        response_format={"type": "json_object"}
-    )
+    llm = build_chat_model(
+        temperature=temperature,
+        max_tokens=max_tokens,
+        use_reasoning=use_reasoning,
+    ).bind(response_format={"type": "json_object"})
     result = await llm.ainvoke(
         [
             SystemMessage(content=system_prompt),

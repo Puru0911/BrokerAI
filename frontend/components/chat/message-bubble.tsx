@@ -9,6 +9,7 @@ import {
   parseAttachmentRequest,
   parseAttachmentShare
 } from "@/components/chat/attachment-cards"
+import { ChatText } from "@/components/chat/chat-text"
 import { ContactCard, parseContactCard } from "@/components/chat/contact-card"
 import { cn } from "@/lib/cn"
 import type { BrokerMessage } from "@/lib/api/broker"
@@ -20,7 +21,7 @@ export type MessageActions = {
   onConnect: (matchId: string) => void
   onOpenChat?: (matchId: string) => void
   uploadingRequestId: string | null
-  onRequestUpload: (requestId: string, file: File) => void
+  onRequestUpload: (requestId: string, files: File[]) => void
   grantingAttachmentId: string | null
   onGrant: (attachmentId: string, matchId: string, granted: boolean) => void
 }
@@ -74,8 +75,8 @@ export function MessageBubble({
           <AttachmentRequestCard
             payload={requestCard}
             uploading={actions.uploadingRequestId === requestCard.request_id}
-            onUpload={(file) =>
-              actions.onRequestUpload(requestCard.request_id, file)
+            onUpload={(files) =>
+              actions.onRequestUpload(requestCard.request_id, files)
             }
           />
         ) : null}
@@ -101,7 +102,7 @@ export function MessageBubble({
         ) : null}
         {!hidePlainText && message.content ? (
           <div className="max-w-full whitespace-pre-wrap break-words [overflow-wrap:anywhere] [word-break:break-word]">
-            {message.content}
+            <ChatText text={message.content} />
           </div>
         ) : null}
         {attachments.length > 0 && !shareCard ? (

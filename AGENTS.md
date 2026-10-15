@@ -81,5 +81,18 @@ BROKERAI/
 * Write self-explanatory variable/function names.
 * Add docstrings and type hints everywhere.
 
+## After every code, feature, or fix
+
+When you change code, add a feature, or ship a fix, explain it in the reply in that same thread. Do not skip this, and do not only log it in `docs/REQUIREMENTS.md` or a chat-only note.
+
+Cover:
+
+* What was wrong or missing (flow and product)
+* What changed in the flow
+* What changed in the code (files and behavior)
+* What the fix does now
+
+Keep it in the chat so every Grok thread gets the explanation after the work.
+
 **You now have full context of the project.**
 Treat this as your permanent memory. Update `docs/PROJECT_CONTEXT.md` whenever major decisions are made.

@@ -11,6 +11,7 @@ import {
 
 import { IconLink, IconPaperclip, IconSend, IconX } from "@/components/icons"
 import { cn } from "@/lib/cn"
+import { MAX_UPLOAD_FILES } from "@/lib/local-attachments"
 
 type ChatComposerProps = {
   value: string
@@ -56,7 +57,7 @@ export function ChatComposer({
 
   function addFiles(list: FileList | null) {
     if (!list?.length) return
-    onFilesChange([...files, ...Array.from(list)].slice(0, 5))
+    onFilesChange([...files, ...Array.from(list)].slice(0, MAX_UPLOAD_FILES))
   }
 
   function handleKeyDown(event: KeyboardEvent<HTMLTextAreaElement>) {
@@ -153,7 +154,7 @@ export function ChatComposer({
             type="submit"
             disabled={!canSend}
             aria-label={busy ? "Sending" : "Send"}
-            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent text-surface transition hover:bg-[#0c4d48] disabled:bg-line disabled:text-muted"
+            className="flex h-10 w-10 shrink-0 items-center justify-center rounded-xl bg-accent text-surface transition hover:bg-accent-hover disabled:bg-line disabled:text-muted"
           >
             <IconSend />
           </button>
