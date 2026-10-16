@@ -9,8 +9,8 @@ import pytest
 
 from app.agents.runtime import (
     build_turn_human_content,
-    collect_turn_replies,
     collapse_turn_replies,
+    collect_turn_replies,
     format_session_history_transcript,
     inline_history_in_packet,
     is_retryable_provider_error,
@@ -18,6 +18,7 @@ from app.agents.runtime import (
     message_text,
     model_thinking_text,
     run_tool_loop,
+    split_open_match_lane_replies,
     user_facing_reply_text,
 )
 from app.db.models import AgentMessage
@@ -520,7 +521,107 @@ async def test_run_broker_turn_does_not_republish_prior_chat(
     assert db.add.call_count == 1
 
 
+def test_open_match_step_prose_goes_to_the_request_lane() -> None:
+    status = "I found someone who fits the basics and started that conversation."
+    kickoff = "She's 27 and looking for someone settled in Pune. I'm reaching out now."
+    messages = [
+        AIMessage(
+            content=status,
+            tool_calls=[{"name": "open_match", "args": {"candidate_id": "c1"}, "id": "1"}],
+        ),
+        AIMessage(content=kickoff),
+    ]
+    request_texts, match_texts = split_open_match_lane_replies(messages)
+    assert request_texts == [status]
+    assert match_texts == [kickoff]
+
+
+def test_open_match_without_step_prose_leaves_request_lane_empty() -> None:
+    kickoff = "I'm reaching out to confirm a few details."
+    messages = [
+        AIMessage(
+            content="",
+            tool_calls=[{"name": "open_match", "args": {"candidate_id": "c1"}, "id": "1"}],
+        ),
+        AIMessage(content=kickoff),
+    ]
+    request_texts, match_texts = split_open_match_lane_replies(messages)
+    assert request_texts == []
+    assert match_texts == [kickoff]
+
+
 async def test_open_match_from_request_lane_leaves_an_update_then_starts_match(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from unittest.mock import AsyncMock, MagicMock
+
+    from app.agents import runtime as runtime_mod
+    from app.agents.context import ToolContext
+    from app.agents.tools._common import adopt_focus_if_idle
+
+    status = "I found someone who fits the basics and started that conversation."
+    kickoff = (
+        "I found a counterpart who may fit. I'm reaching out to confirm a few details."
+    )
+
+    async def fake_loop(_llm, _tools, messages, **_kwargs):
+        adopt_focus_if_idle(ctx, "match-new")
+        ctx.opened_match_ids.append("match-new")
+        start = len(messages)
+        messages.append(
+            AIMessage(
+                content=status,
+                tool_calls=[
+                    {"name": "open_match", "args": {"candidate_id": "c1"}, "id": "1"}
+                ],
+            )
+        )
+        messages.append(AIMessage(content=kickoff))
+        return messages, kickoff, collect_turn_replies(messages, start=start)
+
+    async def fake_packet(_ctx):
+        return {"SESSION_ROLE": "source", "open_matches": [], "attention_pointer": "idle"}
+
+    async def fake_history(*_args, **_kwargs):
+        return []
+
+    monkeypatch.setattr(runtime_mod, "run_tool_loop", fake_loop)
+    monkeypatch.setattr(runtime_mod, "build_context_packet", fake_packet)
+    monkeypatch.setattr(runtime_mod, "load_session_history", fake_history)
+    monkeypatch.setattr(runtime_mod, "build_turn_human_content", lambda *_a, **_k: "human")
+    monkeypatch.setattr(runtime_mod, "inline_history_in_packet", lambda _trigger: False)
+    monkeypatch.setattr(
+        runtime_mod, "llm_runtime_info", lambda: {"provider": "test", "model": "x"}
+    )
+
+    added: list[AgentMessage] = []
+
+    def capture(obj) -> None:
+        if isinstance(obj, AgentMessage):
+            added.append(obj)
+
+    db = MagicMock()
+    db.add = MagicMock(side_effect=capture)
+    db.flush = AsyncMock()
+    session = MagicMock()
+    session.id = "sess-1"
+    ctx = ToolContext(
+        db=db,
+        profile=MagicMock(),
+        session=session,
+        request=None,
+        user_message=None,
+        trigger="user_message",
+        focus_match_id=None,
+    )
+    replies = await runtime_mod.run_broker_turn(ctx, llm=object(), tools=[])
+    assert [message.match_id for message in replies] == [None, "match-new"]
+    assert replies[0].content == status
+    assert replies[1].content == kickoff
+    assert [message.match_id for message in added] == [None, "match-new"]
+
+
+async def test_open_match_from_request_lane_uses_canned_fallback_when_silent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from unittest.mock import AsyncMock, MagicMock
@@ -530,14 +631,20 @@ async def test_open_match_from_request_lane_leaves_an_update_then_starts_match(
     from app.agents.prompts import REQUEST_LANE_OPENED_MATCH_REPLY
     from app.agents.tools._common import adopt_focus_if_idle
 
-    kickoff = (
-        "I found a counterpart who may fit. I'm reaching out to confirm a few details."
-    )
+    kickoff = "I'm reaching out to confirm a few details."
 
     async def fake_loop(_llm, _tools, messages, **_kwargs):
         adopt_focus_if_idle(ctx, "match-new")
         ctx.opened_match_ids.append("match-new")
         start = len(messages)
+        messages.append(
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "open_match", "args": {"candidate_id": "c1"}, "id": "1"}
+                ],
+            )
+        )
         messages.append(AIMessage(content=kickoff))
         return messages, kickoff, collect_turn_replies(messages, start=start)
 
@@ -580,7 +687,6 @@ async def test_open_match_from_request_lane_leaves_an_update_then_starts_match(
     assert [message.match_id for message in replies] == [None, "match-new"]
     assert replies[0].content == REQUEST_LANE_OPENED_MATCH_REPLY
     assert replies[1].content == kickoff
-    assert [message.match_id for message in added] == [None, "match-new"]
 
 
 def test_looks_like_process_dump_detects_tool_narration() -> None:
@@ -641,7 +747,6 @@ def test_match_context_inlines_history_after_outreach() -> None:
         "focus_match_id": "match-1",
         "living_request": {"objective": "List a room"},
         "open_matches": [{"match_id": "match-1"}],
-        "other_matches": [{"match_id": "match-2", "label": "housing"}],
         "recent_events": [],
         "attention_pointer": "idle",
         "attachments": [],
@@ -657,8 +762,10 @@ def test_match_context_inlines_history_after_outreach() -> None:
     )
     assert "LANE: match" in human
     assert "focus_match_id: match-1" in human
-    assert "other_matches:" in human
-    assert "match-2" in human
+    assert "open_match_count:" in human
+    assert "attachments (this person's files in this session):" in human
+    assert "other_matches:" not in human
+    assert "match-2" not in human
     assert human.index("outreach_context") < human.index("this_session_earlier_chat")
     assert human.index("A tenant asked for photos") < human.index("What's your budget?")
     assert "Classify each item this turn" not in human

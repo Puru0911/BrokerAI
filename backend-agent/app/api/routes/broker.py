@@ -78,7 +78,7 @@ from app.services.orchestrator import (
     handle_session_message,
 )
 from app.services.outreach import schedule_outreach
-from app.services.session_delete import delete_session_cascade
+from app.services.session_delete import SESSION_DELETED, delete_session_cascade
 from app.services.storage import StorageNotConfiguredError
 from app.services.workflow import get_session_request, load_pair_requests
 
@@ -103,7 +103,7 @@ async def _get_owned_session(
     profile: UserProfile,
 ) -> AgentSession:
     session = await db.get(AgentSession, session_id)
-    if session is None or session.user_id != profile.id:
+    if session is None or session.user_id != profile.id or session.status == SESSION_DELETED:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker session not found")
     return session
 
@@ -117,9 +117,12 @@ async def _get_owned_match(
     if match is None:
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker match not found")
     result = await db.execute(
-        select(AgentRequest).where(
+        select(AgentRequest)
+        .join(AgentSession, AgentRequest.session_id == AgentSession.id)
+        .where(
             AgentRequest.id.in_([match.source_request_id, match.candidate_request_id]),
             AgentRequest.user_id == profile.id,
+            AgentSession.status != SESSION_DELETED,
         )
     )
     if result.scalar_one_or_none() is None:
@@ -195,7 +198,10 @@ async def list_sessions(
     profile = await _require_profile(db, current_user)
     result = await db.execute(
         select(AgentSession)
-        .where(AgentSession.user_id == profile.id)
+        .where(
+            AgentSession.user_id == profile.id,
+            AgentSession.status != SESSION_DELETED,
+        )
         .order_by(desc(AgentSession.updated_at))
     )
     return await serialize_session_list(db, profile, list(result.scalars().all()))
@@ -209,7 +215,11 @@ async def list_requests(
     profile = await _require_profile(db, current_user)
     result = await db.execute(
         select(AgentRequest)
-        .where(AgentRequest.user_id == profile.id)
+        .join(AgentSession, AgentRequest.session_id == AgentSession.id)
+        .where(
+            AgentRequest.user_id == profile.id,
+            AgentSession.status != SESSION_DELETED,
+        )
         .order_by(desc(AgentRequest.updated_at))
     )
     return [BrokerRequestRead.from_request(request) for request in result.scalars().all()]

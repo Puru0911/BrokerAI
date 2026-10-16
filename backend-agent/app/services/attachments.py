@@ -177,6 +177,7 @@ def counterpart_file_inventory(
                     "purpose": item.get("purpose"),
                     "label": item.get("label"),
                     "content_type": item.get("content_type"),
+                    "owner": "counterpart",
                     "shared": item.get("id") in shared,
                 }
             )
@@ -1101,6 +1102,7 @@ async def context_attachments(
             "purpose": item.purpose,
             "content_type": item.content_type,
             "description": item.description,
+            "owner": "this_person",
         }
         if item.kind == KIND_URL:
             payload["url"] = item.url

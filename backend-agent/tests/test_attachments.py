@@ -97,6 +97,7 @@ def test_counterpart_file_inventory_lists_public_and_counts_the_rest() -> None:
     assert inventory["pending_count"] == 1
     assert [item["id"] for item in inventory["public"]] == ["pub-1", "pub-2"]
     assert inventory["public"][0]["shared"] is False
+    assert inventory["public"][0]["owner"] == "counterpart"
     assert inventory["public"][1]["shared"] is True
     assert inventory["public"][0]["purpose"] == "listing_photos"
     assert inventory["public"][0]["label"] == "Desk photo"

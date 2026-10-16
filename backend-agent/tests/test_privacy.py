@@ -15,8 +15,10 @@ def test_public_details_strips_semantic_document() -> None:
     details = {
         "objective": "Need a 1BHK",
         "semantic": {"profile": {"semantic_document": "secret-ish"}},
+        "possible_pair": {"other_request_id": "req-b"},
     }
     assert "semantic" not in public_details(details)
+    assert "possible_pair" not in public_details(details)
     assert public_details(details)["objective"] == "Need a 1BHK"
 
 

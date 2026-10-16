@@ -1466,6 +1466,9 @@ function laneAlert(match: BrokerMatchLane) {
 
 function matchEmptyTitle(match: BrokerMatchLane) {
   if (match.status === "closed") {
+    if (match.close_reason === "request_closed") {
+      return "This match is closed. The other person is no longer in it."
+    }
     return match.close_reason
       ? `This match is closed (${formatStatus(match.close_reason)}).`
       : "This match is closed."
@@ -1478,6 +1481,9 @@ function matchEmptyTitle(match: BrokerMatchLane) {
 
 function matchEmptyDetail(match: BrokerMatchLane) {
   if (match.status === "closed") {
+    if (match.close_reason === "request_closed") {
+      return "This match chat stays here, separate from Your request. You can still ask the broker what happened."
+    }
     return "You can still ask the broker what happened. Other matches on this request stay open."
   }
   if (match.status === "connected") {

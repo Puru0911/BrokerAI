@@ -15,6 +15,7 @@ def test_match_context_instruction_is_for_this_chat() -> None:
     assert "outreach_context" in text.lower()
     assert "match lane" in text.lower()
     assert "focus_match_id" in text.lower()
+    assert "do not open_match" in text.lower()
 
 
 def test_schedule_outreach_does_not_run_the_turn_inline() -> None:
@@ -38,4 +39,29 @@ def test_schedule_outreach_does_not_run_the_turn_inline() -> None:
     ):
         schedule_outreach(jobs)
     assert created == ["outreach-match-1-source"]
+    run.assert_not_called()
+
+
+def test_schedule_possible_pair_outreach_uses_request_id() -> None:
+    jobs = [
+        OutreachJob(
+            match_id=None,
+            to=None,
+            context="Ask if they can relocate.",
+            from_session_id="session-a",
+            to_request_id="req-b",
+        )
+    ]
+    created: list[object] = []
+
+    def fake_create_task(coro, name=None):
+        created.append(name)
+        coro.close()
+
+    with (
+        patch("app.services.outreach.asyncio.create_task", side_effect=fake_create_task),
+        patch("app.services.outreach.run_match_context_turn", new_callable=AsyncMock) as run,
+    ):
+        schedule_outreach(jobs)
+    assert created == ["outreach-req-b-None"]
     run.assert_not_called()

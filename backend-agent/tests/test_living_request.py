@@ -1,6 +1,7 @@
 from app.db.models import AgentRequest
 from app.services.living_request import (
     apply_request_patch,
+    counterpart_brief_stub,
     living_request_dict,
     living_request_from_model,
 )
@@ -57,3 +58,34 @@ def test_apply_request_patch_updates_only_provided_fields() -> None:
     budget_only = apply_request_patch(details, {"budget": "70 lakhs"})
     assert budget_only["budget"] == "70 lakhs"
     assert budget_only["timeline"] == ""
+
+
+def test_apply_request_patch_keeps_a_possible_pair() -> None:
+    details = {
+        "objective": "Find a roommate in Pune",
+        "budget": "",
+        "location": "Pune",
+        "timeline": "",
+        "hard_constraints": [],
+        "soft_preferences": [],
+        "domain": "",
+        "freeform_notes": "",
+        "possible_pair": {
+            "other_request_id": "req-b",
+            "question": "Confirm community",
+            "waiting_on_request_id": "req-b",
+            "asked_by_request_id": "req-a",
+        },
+    }
+    patched = apply_request_patch(details, {"budget": "15k"})
+    assert patched["budget"] == "15k"
+    assert patched["possible_pair"]["other_request_id"] == "req-b"
+
+
+def test_counterpart_brief_stub_does_not_include_the_other_bio() -> None:
+    view = counterpart_brief_stub("req-other")
+    assert view == {
+        "request_id": "req-other",
+        "possible_counterpart": True,
+        "objective": "A possible counterpart for this request.",
+    }

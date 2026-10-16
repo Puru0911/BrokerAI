@@ -9,6 +9,13 @@ from app.db.models import AgentRequest
 from app.llm.client import invoke_structured_model, is_llm_configured, llm_configuration_error
 from app.services.living_request import living_request_dict
 
+RecommendedAction = Literal[
+    "open_match",
+    "ask_clarifying_question",
+    "ask_other_person",
+    "skip",
+]
+
 
 class PairEvaluation(BaseModel):
     model_config = {"extra": "ignore"}
@@ -19,10 +26,11 @@ class PairEvaluation(BaseModel):
     missing_info: list[str] = Field(default_factory=list)
     risk_flags: list[str] = Field(default_factory=list)
     negotiation_room: bool = False
-    recommended_action: Literal["open_match", "ask_clarifying_question", "skip"]
+    recommended_action: RecommendedAction
     clarifying_question: str = ""
     next_questions: list[str] = Field(default_factory=list)
     rationale: str = ""
+    candidate_id: str = ""
 
 
 async def evaluate_pair(
@@ -36,7 +44,7 @@ async def evaluate_pair(
     similarity = None
     if retrieval_distance is not None:
         similarity = max(0.0, min(1.0, 1.0 - float(retrieval_distance)))
-    return await invoke_structured_model(
+    evaluation = await invoke_structured_model(
         parser_model=PairEvaluation,
         system_prompt=PAIR_EVALUATOR_PROMPT,
         human_payload={
@@ -47,3 +55,5 @@ async def evaluate_pair(
         },
         temperature=0.1,
     )
+    evaluation.candidate_id = candidate_request.id
+    return evaluation

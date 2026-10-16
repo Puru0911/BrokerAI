@@ -56,7 +56,7 @@ Kept short on purpose:
 - Match: `open` | `accepted` | `connected` | `closed`
 - Session: `open` | `closed`
 
-A request may have several live matches (default cap 3). `agent_messages.match_id` is the lane: null is the brief/request chat, set is that pair. `waiting_match_id` is attention, not a router. POST `/sessions/{id}/messages` may include `match_id`. Every user message still goes to the same agent with a focused context packet. Match terms live on `agent_matches.notebook`, not in event `message_text`.
+A request may have several live matches (default cap 3) and at most one possible pair. `agent_messages.match_id` is the lane: null is the brief/request chat, set is that pair. `waiting_match_id` is attention, not a router. POST `/sessions/{id}/messages` may include `match_id`. Every user message still goes to the same agent with a focused context packet. Match terms live on `agent_matches.notebook`, not in event `message_text`.
 
 ## Tests
 

@@ -111,12 +111,15 @@ def test_broker_prompt_states_purpose_and_capabilities() -> None:
     assert "your_role" in lowered
     assert "lane" in lowered
     assert "focus_match_id" in lowered
-    assert "other_matches" in lowered
+    assert "this turn is this lane only" in lowered
+    assert "other_matches" not in lowered
     assert "never speak in first person" in lowered
     assert "tool names" in lowered
-    assert "one question" in lowered
+    assert "one question" not in lowered
     assert "connecting people" in lowered
     assert "optional, not mandatory" in lowered
+    assert "answer this person's own request" in lowered
+    assert "do not hint at the answer" in lowered
     assert "request_attachment" in lowered
     assert "== FILES ==" not in BROKER_SYSTEM_PROMPT_FULL
     assert "== CONNECTING PEOPLE ==" not in BROKER_SYSTEM_PROMPT_FULL
@@ -130,6 +133,10 @@ def test_small_system_prompt_covers_the_same_contract() -> None:
     assert len(BROKER_SYSTEM_PROMPT_DEV) < len(BROKER_SYSTEM_PROMPT_FULL)
     assert BROKER_SYSTEM_PROMPT == BROKER_SYSTEM_PROMPT_FULL
     assert "update_request patches" in BROKER_SYSTEM_PROMPT_DEV.lower()
+    assert "this turn is this lane only" in BROKER_SYSTEM_PROMPT_DEV.lower()
+    assert "this person's files" in BROKER_SYSTEM_PROMPT_DEV.lower()
+    assert "other_files" in BROKER_SYSTEM_PROMPT_DEV.lower()
+    assert "other_matches" not in BROKER_SYSTEM_PROMPT_DEV.lower()
 
 
 def test_prompt_size_setting_selects_small_or_full() -> None:
@@ -157,13 +164,35 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
     assert "verdicts" in speak
     assert "recap their brief" in speak
     assert "language this person last used" in speak
+    assert "answer this person's own request" in speak
+    assert "do not hint at the answer" in speak
+    assert "one question" not in speak
     small_speak = BROKER_SYSTEM_PROMPT_DEV.split("== HOW YOU SPEAK ==")[1].split("==")[0].lower()
     assert "language this person last used" in small_speak
+    assert "do not hint at the answer" in small_speak
+    assert "one question" not in small_speak
+    each = BROKER_SYSTEM_PROMPT_FULL.split("== EACH TURN ==")[1].split("==")[0].lower()
+    assert "open_match_count" in each
+    assert "this person's files" in each
+    assert "other_files" in each
+    assert "shared_with_you" in each
     work = BROKER_SYSTEM_PROMPT_FULL.split("== HOW YOU WORK ==")[1].split("==")[0].lower()
     assert "optional, not mandatory" in work
     assert "never treat a skipped question as a stop" in work
     assert "request_attachment" in work
     assert "toward a connection" in work
+    assert "one question" not in work
+    assert "open_match from the request lane" in work
+    assert "ask_other_person" in work
+    assert "information, not an order" in work
+    assert "do not open a match yet" in work
+    assert "one possible pair" in work
+    assert "several open matches" in work
+    small_work = BROKER_SYSTEM_PROMPT_DEV.split("== HOW YOU WORK ==")[1].split("==")[0].lower()
+    assert "open_match call" in small_work
+    assert "ask_other_person" in small_work
+    assert "one possible pair" in small_work
+    assert "several open matches" in small_work
 
 
 def test_tools_describe_effects_not_sequences() -> None:
@@ -171,6 +200,7 @@ def test_tools_describe_effects_not_sequences() -> None:
     assert "omitted" in TOOL_UPDATE_REQUEST_FULL.lower()
     assert "private working note" in TOOL_THINK_FULL.lower()
     assert "broker only" in TOOL_UPDATE_NOTEBOOK_FULL.lower() or "humans never see" in TOOL_UPDATE_NOTEBOOK_FULL.lower()
+    assert "this person in this chat actually stated" in TOOL_UPDATE_NOTEBOOK_FULL.lower()
     assert "search index" in TOOL_INDEX_REQUEST_FULL.lower()
     assert "anonymized" in TOOL_SEARCH_COUNTERPARTIES_FULL.lower()
     assert "candidate_id" in TOOL_EVALUATE_PAIR_FULL
@@ -193,6 +223,7 @@ def test_tools_describe_effects_not_sequences() -> None:
     assert "personal" in TOOL_SHARE_ATTACHMENT_FULL.lower()
     assert "gallery" in TOOL_SHARE_ATTACHMENT_FULL.lower()
     assert "attachment_ids" in TOOL_SHARE_ATTACHMENT_FULL
+    assert "other person's chat" in TOOL_SHARE_ATTACHMENT_FULL.lower()
 
     tool_docs = "\n".join(
         [
@@ -227,6 +258,7 @@ def test_user_message_instruction_is_a_reply_brief() -> None:
     lowered = USER_MESSAGE_INSTRUCTION.lower()
     assert "ordinary language" in lowered
     assert "same language they used" in lowered
+    assert "one question" not in lowered
     assert "tool" in lowered
     assert "classify" not in lowered
     assert "accept_match" not in lowered
@@ -244,6 +276,7 @@ def test_trigger_instructions_state_the_situation() -> None:
     assert "outreach_context" in MATCH_CONTEXT_INSTRUCTION.lower()
     assert "this person" in MATCH_CONTEXT_INSTRUCTION.lower()
     assert "message_party" in MATCH_CONTEXT_INSTRUCTION.lower()
+    assert "do not open_match on this outreach turn" in MATCH_CONTEXT_INSTRUCTION.lower()
 
 
 def test_fallback_reply_is_plain() -> None:
@@ -261,6 +294,8 @@ def test_helper_prompts_use_spec_contracts() -> None:
         assert "recommended_action" in eval_prompt
         assert "complementary" in eval_prompt
         assert "ask_clarifying_question" in eval_prompt
+        assert "ask_other_person" in eval_prompt
+        assert "do not open yet" in eval_prompt.lower()
         assert "next_questions" in eval_prompt
         assert "buy / rent" not in eval_prompt.lower()
         assert "housing vs hiring" not in eval_prompt.lower()

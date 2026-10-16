@@ -23,7 +23,11 @@ def redact_identity(text: str) -> str:
 def public_details(details: dict[str, Any] | None) -> dict[str, Any]:
     if not details:
         return {}
-    return {key: value for key, value in details.items() if key != "semantic"}
+    return {
+        key: value
+        for key, value in details.items()
+        if key not in {"semantic", "possible_pair"}
+    }
 
 
 def anonymized_request(request: AgentRequest) -> dict[str, Any]:

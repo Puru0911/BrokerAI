@@ -12,17 +12,21 @@ from app.services.attachments import (
     counterpart_file_inventory,
     shared_attachment_ids_for_match,
 )
-from app.services.living_request import living_request_from_model, redacted_living_request
-from app.services.match_lanes import roster_entry
+from app.services.living_request import (
+    counterpart_brief_stub,
+    living_request_from_model,
+    redacted_living_request,
+)
+from app.services.possible_pair import possible_pair
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_CONNECTED,
-    MATCH_OPEN,
     counterpart_request_id,
     list_matches_for_request,
     load_events,
     load_pair_requests,
     match_notebook,
+    open_match_count,
     party_role,
 )
 
@@ -35,10 +39,11 @@ PartyTo = Literal["source", "candidate"]
 class OutreachJob:
     """A broker turn to run later on the other party's session."""
 
-    match_id: str
-    to: PartyTo
+    match_id: str | None
+    to: PartyTo | None
     context: str
     from_session_id: str
+    to_request_id: str | None = None
 
 
 MailKind = Literal["broker_outreach", "intro_offered", "contacts_delivered"]
@@ -121,30 +126,22 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
     role = await resolve_session_role(ctx)
     living = living_request_from_model(ctx.request)
     open_matches: list[dict[str, Any]] = []
-    other_matches: list[dict[str, Any]] = []
     recent_events: list[dict[str, Any]] = []
     attention = "idle"
     focus_id = focused_match_id(ctx)
     lane = "match" if focus_id else "request"
 
-    if ctx.request is not None:
+    if ctx.request is not None and focus_id:
         matches = await list_matches_for_request(ctx.db, ctx.request.id, limit=20)
         for match in matches:
+            if match.id != focus_id:
+                continue
             snapshot = await _match_snapshot(ctx, match)
-            events = snapshot.get("last_events") or []
-            if focus_id and match.id == focus_id:
-                open_matches.append(snapshot)
-                recent_events.extend(events)
-            elif match.status in {MATCH_OPEN, MATCH_ACCEPTED, MATCH_CONNECTED}:
-                other_matches.append(roster_entry(snapshot))
-                if not focus_id:
-                    recent_events.extend(events[-3:])
+            open_matches.append(snapshot)
+            recent_events.extend(snapshot.get("last_events") or [])
         recent_events.sort(key=lambda item: item.get("created_at") or "")
         recent_events = recent_events[-12:]
-        if focus_id:
-            attention = f"focused on match {focus_id}"
-        elif ctx.request.waiting_match_id:
-            attention = f"waiting on reply for match {ctx.request.waiting_match_id}"
+        attention = f"focused on match {focus_id}"
 
     user_text = ctx.user_message.content if ctx.user_message else None
     attachments, new_uploads = await context_attachments(
@@ -152,6 +149,10 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
         session_id=ctx.session.id,
         new_ids=ctx.new_attachment_ids,
     )
+    pending = possible_pair(ctx.request.details) if ctx.request is not None and not focus_id else None
+    live_open_count = 0
+    if ctx.request is not None:
+        live_open_count = await open_match_count(ctx.db, ctx.request.id)
     return {
         "SESSION_ROLE": role,
         "TRIGGER": ctx.trigger,
@@ -159,7 +160,8 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
         "focus_match_id": focus_id,
         "living_request": living,
         "open_matches": open_matches,
-        "other_matches": other_matches,
+        "open_match_count": live_open_count,
+        "possible_pair": pending,
         "recent_events": recent_events,
         "attention_pointer": attention,
         "current_user_message": user_text,
@@ -179,8 +181,9 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
     other = candidate if other_id == candidate.id else source
     events = await load_events(ctx.db, match.id, limit=8)
     identity_open = match.status in {MATCH_ACCEPTED, MATCH_CONNECTED}
-    other_party = redacted_living_request(other)
+    your_brief = living_request_from_model(ctx.request)
     if identity_open:
+        other_brief = redacted_living_request(other)
         other_profile = await ctx.db.get(UserProfile, other.user_id)
         if other_profile is not None:
             contact: dict[str, Any] = {"name": other_profile.name}
@@ -188,11 +191,17 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
                 contact["gender"] = other_profile.gender
             if other_profile.date_of_birth:
                 contact["date_of_birth"] = other_profile.date_of_birth.isoformat()
-            other_party["contact"] = contact
+            other_brief["contact"] = contact
+    else:
+        other_brief = counterpart_brief_stub(other.id)
     shared_ids = await shared_attachment_ids_for_match(ctx.db, match.id)
     your_attachments, _ = await context_attachments(ctx.db, session_id=ctx.session.id)
     other_attachments, _ = await context_attachments(ctx.db, session_id=other.session_id)
-    shared_by_you = [item for item in your_attachments if item["id"] in shared_ids]
+    shared_by_you = [
+        {**item, "owner": "this_person"}
+        for item in your_attachments
+        if item["id"] in shared_ids
+    ]
     shared_with_you = [
         {
             "id": item["id"],
@@ -200,6 +209,7 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
             "label": item["label"],
             "purpose": item["purpose"],
             "content_type": item["content_type"],
+            "owner": "counterpart",
         }
         for item in other_attachments
         if item["id"] in shared_ids
@@ -208,9 +218,8 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
         "match_id": match.id,
         "status": match.status,
         "your_role": party_role(match, ctx.request),
-        "your_brief": living_request_from_model(ctx.request),
-        "other_brief": other_party,
-        "other_party": other_party,
+        "your_brief": your_brief,
+        "other_brief": other_brief,
         "notebook": match_notebook(match),
         "other_files": counterpart_file_inventory(other_attachments, shared_ids),
         "shared_by_you": shared_by_you,

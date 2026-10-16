@@ -346,4 +346,8 @@ class VapidPublicKeyRead(BaseModel):
 
 
 def _public_details(details: dict) -> dict:
-    return {key: value for key, value in details.items() if key != "semantic"}
+    return {
+        key: value
+        for key, value in details.items()
+        if key not in {"semantic", "possible_pair"}
+    }

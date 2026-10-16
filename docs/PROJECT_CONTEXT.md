@@ -39,11 +39,11 @@ user message
   → reply to the current user (and optionally a named party via message_party)
 ```
 
-One agent talks to every party. A request may have several live matches (`MAX_OPEN_MATCHES_PER_REQUEST`, default 3). Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus, `other_matches` = compact roster). `update_request` always patches the shared living brief, including from a match lane when this person adds a detail that applies beyond that pair. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
+One agent talks to every party. A request may have several live matches (`MAX_OPEN_MATCHES_PER_REQUEST`, default 3) and at most one possible pair waiting on a clarifying question. Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus only). The model does not receive a roster of other live matches. `update_request` always patches the shared living brief, including from a match lane when this person adds a detail that applies beyond that pair. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
 
 Do not split this into intake vs mediation agents. The product is one broker with the full tool set on every turn. Parallelism already exists as fire-and-forget `match_context` turns on the other party's matching lane.
 
-Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(match_id, context)` queues a **separate** broker turn on the other party's **match lane** (`trigger=match_context`, `focus_match_id` set) after this request commits. It returns an ack only and does not wait for their reply. This lane's bubble is the final reply. The other human's answer is a later `user_message` on their session in that match lane. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
+Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(match_id, context)` queues a **separate** broker turn on the other party's **match lane** (`trigger=match_context`, `focus_match_id` set) after this request commits. With `candidate_id` and no open match, the same tool queues a request-lane turn for a possible pair (a clarifying question to the counterpart; no tab yet). It returns an ack only and does not wait for their reply. This lane's bubble is the final reply. The other human's answer is a later `user_message` on their session. After they answer, the model decides whether to `open_match`. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
 
 `backend/` is the earlier graph prototype. It is not the active architecture.
 
@@ -68,8 +68,8 @@ FastAPI app with the same chat contract the Next.js client already uses.
 
 New tables so this service can share Postgres with the old folder without colliding:
 
-- `agent_sessions`, `agent_messages` (`match_id` null = request lane, set = that match lane)
-- `agent_requests` — one living brief per session
+- `agent_sessions`, `agent_messages` (`match_id` null = request lane, set = that match lane). Deleting a session that still has matches tombstones `session.status=deleted` and closes those matches with `request_closed` so the remaining party keeps a match tab; `match_id` is `ON DELETE SET NULL`, so dropping the match row would dump that chat onto Your request.
+- `agent_requests` — one living brief per session (kept closed when the owner deletes a session that still has matches)
 - `agent_matches` — a pair of briefs plus `notebook` (shared facts and outstanding question)
 - `agent_match_reads` — per-user last-read for match-lane unread badges
 - `agent_events` — append-only match audit
@@ -98,7 +98,7 @@ Statuses are intentionally short:
 - Match: `open` | `accepted` | `connected` | `closed` (`close_reason` is `skip`, `reject`, `withdraw`, `expired`, or `request_closed`)
 - Session: `open` | `closed`
 
-`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). Closing one pair leaves other open matches on the request. `message_party` writes into the other party's match lane for that pair; questions for the current user belong in the final reply of this lane.
+`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). Closing one pair leaves other open matches on the request. `message_party` writes into the other party's match lane for an open pair. A clarifying question for this user stays in this chat (`ask_clarifying_question`). A clarifying question only the counterpart can answer (`ask_other_person`) uses `message_party` with `candidate_id` on their request lane; no match is open until they answer and the model opens one.
 
 `waiting_match_id` on a request is attention (“we last asked this person about this match”). It does not route the next message. The POST body `match_id` (and outreach `focus_match_id`) chooses the lane. Frontend match tabs send that id; the request tab omits it.
 
@@ -113,7 +113,7 @@ Bound schemas describe what each tool does. The broker chooses among them.
 - `search_counterparties` / `search_again` — anonymized RAG candidates
 - `evaluate_pair` — screens one retrieved pair; recommendation is information for the broker
 - `open_match` — start working a pair (up to `MAX_OPEN_MATCHES_PER_REQUEST` on each side); seeds the match notebook
-- `message_party` — queue a later broker turn in `source` or `candidate` chat
+- `message_party` — queue a later broker turn in the other person's chat (open match lane, or request lane via `candidate_id` for a possible pair)
 - `update_notebook` — shared terms plus agent_note/next_action for later turns
 - `skip_match` / `reject_match` — close a pair
 - `accept_match` — this user agreed; cards share when both have
@@ -132,7 +132,7 @@ OpenRouter (primary) uses LangChain `ChatOpenRouter` with a config-driven `reaso
 
 If no API key is configured, the agent holds the request and says the model is unavailable.
 
-The system prompt is the broker's operating brief: who is in this chat, what the packet contains, when each tool applies, how to decide, and how to speak. Bound schemas still carry arguments. User-facing replies are a question, an acknowledgement, or a short update — not a recap of the brief, of tool findings, or of the work of the turn. Empty search is one short line.
+The system prompt is the broker's operating brief: who is in this chat, what the packet contains, when each tool applies, how to decide, and how to speak. Bound schemas still carry arguments. User-facing replies are an acknowledgement, a short update, or questions as needed — not a recap of the brief, of tool findings, or of the work of the turn. When mentioning a counterpart before accept, share only terms that answer this person's request. Empty search is one short line. On a match lane before accept, `other_brief` is a stub (`possible_counterpart`). `get_match_events` still returns the full other brief. Notebook `facts` are this person's stated terms; cross-party inference belongs in `agent_note`.
 
 Prompt size is `AGENT_PROMPT_SIZE` (`full` or `small` / `compressed` / `compact`), not `ENV`. `full` binds the production system prompt, tool descriptions, index/search/evaluator, and trigger strings. `small` binds the shorter copies. Restart the process after changing it.
 

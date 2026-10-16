@@ -19,6 +19,7 @@ from app.core.logging import clip
 from app.db.models import AgentRequest
 from app.rag.indexer import index_request
 from app.services.living_request import apply_request_patch, living_request_from_model
+from app.services.possible_pair import possible_pair, set_possible_pair
 from app.services.privacy import json_result
 from app.services.titles import generate_request_copy
 from app.services.workflow import REQUEST_OPEN, get_session_request, open_match_count
@@ -128,6 +129,9 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             "timeline": args.timeline.strip(),
             "freeform_notes": args.freeform_notes.strip(),
         }
+        pending = possible_pair(request.details) if request is not None else None
+        if pending is not None:
+            details = set_possible_pair(details, pending)
         title, summary = await generate_request_copy(details)
         if request is None:
             request = AgentRequest(

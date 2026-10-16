@@ -228,7 +228,10 @@ def build_attachment_tools(ctx: ToolContext) -> list[BaseTool]:
         already = [item_id for item_id, status in statuses.items() if status == "already_shared"]
         ok = bool(shared_ids or already) and not missing_ids
         if shared_ids:
-            outcome = f"Delivered {len(shared_ids)} file(s) as one gallery."
+            outcome = (
+                f"Delivered {len(shared_ids)} file(s) as one gallery in the "
+                "other person's chat."
+            )
         elif already and not permission_ids:
             outcome = "Those files were already shared."
             ok = True

@@ -7,7 +7,7 @@ from typing import Annotated, Literal
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 
-from app.agents.context import OutreachJob, ToolContext
+from app.agents.context import OutreachJob, ToolContext, focused_match_id
 from app.agents.prompts import (
     TOOL_ACCEPT_MATCH,
     TOOL_GET_MATCH_EVENTS,
@@ -28,7 +28,12 @@ from app.services.introduction import (
     record_party_go_ahead,
     upsert_connect_offer,
 )
-from app.services.living_request import redacted_living_request
+from app.services.living_request import counterpart_brief_stub, redacted_living_request
+from app.services.possible_pair import (
+    persist_possible_pair,
+    possible_pair,
+    possible_pair_entry,
+)
 from app.services.privacy import json_result, redact_identity
 from app.services.workflow import (
     MATCH_ACCEPTED,
@@ -68,6 +73,12 @@ class MessagePartyArgs(BaseModel):
         default=None,
         description="The match whose other party should be reached. Defaults to the focused match lane.",
     )
+    candidate_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=36,
+        description="Screened candidate brief to reach when no match is open yet.",
+    )
     context: str = Field(
         min_length=1,
         max_length=1200,
@@ -86,7 +97,10 @@ class UpdateNotebookArgs(BaseModel):
     )
     facts: Annotated[list[str] | None, BeforeValidator(coerce_optional_str_list)] = Field(
         default=None,
-        description="Concrete terms this person actually stated.",
+        description=(
+            "Terms this person in this chat actually stated. Do not copy the "
+            "other brief or recap both bios. Other-side inference goes in agent_note."
+        ),
     )
     agent_note: str | None = Field(
         default=None,
@@ -226,10 +240,154 @@ async def _close_match(
     )
 
 
+async def _clear_possible_pair_on_open(ctx: ToolContext, candidate: AgentRequest) -> None:
+    if ctx.request is None:
+        return
+    pending = possible_pair(ctx.request.details)
+    if pending and pending["other_request_id"] != candidate.id:
+        old = await ctx.db.get(AgentRequest, pending["other_request_id"])
+        if old is not None:
+            old_pending = possible_pair(old.details)
+            if old_pending and old_pending["other_request_id"] == ctx.request.id:
+                persist_possible_pair(old, None)
+    persist_possible_pair(ctx.request, None)
+    cand_pending = possible_pair(candidate.details)
+    if cand_pending and cand_pending["other_request_id"] == ctx.request.id:
+        persist_possible_pair(candidate, None)
+
+
+async def _notify_possible_pair_outcome(
+    ctx: ToolContext, other: AgentRequest, context: str
+) -> str:
+    """This person answered. Tell the original asker on their request lane. No match yet."""
+    persist_possible_pair(ctx.request, None)
+    other_pending = possible_pair(other.details)
+    if other_pending and other_pending["other_request_id"] == ctx.request.id:
+        persist_possible_pair(other, None)
+    brief = context.strip()
+    job = OutreachJob(
+        match_id=None,
+        to=None,
+        context=brief,
+        from_session_id=ctx.session.id,
+        to_request_id=other.id,
+    )
+    if any(
+        item.to_request_id == job.to_request_id and item.match_id is None
+        for item in ctx.queued_outreach
+    ):
+        return json_result(
+            ok=True,
+            candidate_id=other.id,
+            queued=True,
+            duplicate=True,
+            possible_pair=False,
+        )
+    ctx.queued_outreach.append(job)
+    logger.info(
+        "possible_pair outcome queued session=%s to_request=%s to_session=%s",
+        ctx.session.id,
+        other.id,
+        other.session_id,
+    )
+    return json_result(
+        ok=True,
+        candidate_id=other.id,
+        queued=True,
+        possible_pair=False,
+        outcome="Telling them separately. No match is open. This chat still needs your final reply.",
+    )
+
+
+async def _queue_possible_pair_question(
+    ctx: ToolContext, candidate_id: str, context: str
+) -> str:
+    if ctx.request is None:
+        return json_result(ok=False, error="No brief is saved for this session.")
+    if candidate_id == ctx.request.id:
+        return json_result(ok=False, error="Cannot ask a question on the same request.")
+    other = await ctx.db.get(AgentRequest, candidate_id)
+    if other is None:
+        return json_result(ok=False, error="Candidate request not found.")
+    if other.user_id == ctx.request.user_id:
+        return json_result(ok=False, error="A user cannot be matched with their own request.")
+    existing = possible_pair(ctx.request.details)
+    if (
+        existing
+        and existing["waiting_on_request_id"] == ctx.request.id
+        and existing["other_request_id"] == other.id
+    ):
+        return await _notify_possible_pair_outcome(ctx, other, context)
+    if existing and existing["other_request_id"] != other.id:
+        old = await ctx.db.get(AgentRequest, existing["other_request_id"])
+        if old is not None:
+            old_pending = possible_pair(old.details)
+            if old_pending and old_pending["other_request_id"] == ctx.request.id:
+                persist_possible_pair(old, None)
+    other_pending = possible_pair(other.details)
+    if other_pending and other_pending["other_request_id"] != ctx.request.id:
+        return json_result(
+            ok=False,
+            error="The other person already has a possible pair waiting.",
+        )
+    brief = context.strip()
+    self_entry = possible_pair_entry(
+        other_request_id=other.id,
+        question=brief,
+        waiting_on_request_id=other.id,
+        asked_by_request_id=ctx.request.id,
+    )
+    other_entry = possible_pair_entry(
+        other_request_id=ctx.request.id,
+        question=brief,
+        waiting_on_request_id=other.id,
+        asked_by_request_id=ctx.request.id,
+    )
+    persist_possible_pair(ctx.request, self_entry)
+    persist_possible_pair(other, other_entry)
+    job = OutreachJob(
+        match_id=None,
+        to=None,
+        context=brief,
+        from_session_id=ctx.session.id,
+        to_request_id=other.id,
+    )
+    if any(
+        item.to_request_id == job.to_request_id and item.match_id is None
+        for item in ctx.queued_outreach
+    ):
+        return json_result(
+            ok=True,
+            candidate_id=other.id,
+            queued=True,
+            duplicate=True,
+            possible_pair=True,
+        )
+    ctx.queued_outreach.append(job)
+    logger.info(
+        "possible_pair question queued session=%s candidate_id=%s to_session=%s",
+        ctx.session.id,
+        other.id,
+        other.session_id,
+    )
+    return json_result(
+        ok=True,
+        candidate_id=other.id,
+        queued=True,
+        possible_pair=True,
+        outcome="Asking them separately. No match is open yet. This chat still needs your final reply.",
+    )
+
+
 def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
     async def open_match(args: OpenMatchArgs) -> str:
         if ctx.request is None:
             return json_result(ok=False, error="No brief is saved for this session.")
+        if ctx.trigger == "match_context" and not focused_match_id(ctx):
+            return json_result(
+                ok=False,
+                error="This outreach turn is to ask them. Do not open a match yet.",
+            )
         if args.candidate_id == ctx.request.id:
             return json_result(ok=False, error="Cannot open a match against the same request.")
         candidate = await ctx.db.get(AgentRequest, args.candidate_id)
@@ -297,6 +455,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             )
             ctx.opened_match_ids.append(match.id)
         adopt_focus_if_idle(ctx, match.id)
+        await _clear_possible_pair_on_open(ctx, candidate)
         logger.info(
             "open_match session=%s match_id=%s candidate_id=%s reused=%s",
             ctx.session.id,
@@ -309,7 +468,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             match_id=match.id,
             candidate_id=candidate.id,
             reused=reused,
-            other_party=redacted_living_request(candidate),
+            other_brief=counterpart_brief_stub(candidate.id),
             outcome="Match opened. No message sent.",
         )
 
@@ -318,6 +477,18 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             return json_result(
                 ok=False,
                 error="This turn is already the other party's chat. Reply here. Do not contact them again now.",
+            )
+        has_match = bool((args.match_id or "").strip() or focused_match_id(ctx))
+        if not has_match:
+            candidate_id = (args.candidate_id or "").strip()
+            pending = possible_pair(ctx.request.details) if ctx.request is not None else None
+            if not candidate_id and pending is not None:
+                candidate_id = pending["other_request_id"]
+            if candidate_id:
+                return await _queue_possible_pair_question(ctx, candidate_id, args.context)
+            return json_result(
+                ok=False,
+                error="Pass candidate_id to ask a screened person before a match is open.",
             )
         match, current, other, _source = await owned_match(ctx, args.match_id)
         if match.status not in {MATCH_OPEN, MATCH_ACCEPTED}:
@@ -518,7 +689,7 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             ok=True,
             match_id=match.id,
             status=match.status,
-            other_party=redacted_living_request(other),
+            other_brief=redacted_living_request(other),
             notebook=match_notebook(match),
             events=[
                 {

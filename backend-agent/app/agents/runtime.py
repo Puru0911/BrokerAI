@@ -140,6 +140,32 @@ def collect_turn_replies(messages: list[BaseMessage], *, start: int = 0) -> list
     return collapse_turn_replies(replies)
 
 
+def split_open_match_lane_replies(
+    messages: list[BaseMessage], *, start: int = 0
+) -> tuple[list[str], list[str]]:
+    """Prose with or before open_match stays on Your request; later prose is the match tab."""
+    request_texts: list[str] = []
+    match_texts: list[str] = []
+    opened = False
+    for message in messages[start:]:
+        if not isinstance(message, AIMessage):
+            continue
+        text = user_facing_reply_text(getattr(message, "content", ""))
+        names = _tool_names(getattr(message, "tool_calls", None) or [])
+        if "open_match" in names:
+            if text:
+                request_texts.append(text)
+            opened = True
+            continue
+        if not text:
+            continue
+        if opened:
+            match_texts.append(text)
+        else:
+            request_texts.append(text)
+    return collapse_turn_replies(request_texts), collapse_turn_replies(match_texts)
+
+
 def message_text(content: Any) -> str:
     if isinstance(content, str):
         return content.strip()
@@ -279,15 +305,19 @@ def build_turn_human_content(
             "",
             f"open_matches:\n{json.dumps(packet.get('open_matches'), ensure_ascii=False, default=str)}",
             "",
-            f"other_matches:\n{json.dumps(packet.get('other_matches') or [], ensure_ascii=False, default=str)}",
+            f"open_match_count: {packet.get('open_match_count', 0)}",
+            "",
+            f"possible_pair:\n{json.dumps(packet.get('possible_pair'), ensure_ascii=False, default=str)}",
             "",
             f"recent_events:\n{json.dumps(packet.get('recent_events'), ensure_ascii=False, default=str)}",
             "",
             f"attention_pointer: {packet.get('attention_pointer')}",
             "",
-            f"attachments:\n{json.dumps(packet.get('attachments'), ensure_ascii=False, default=str)}",
+            "attachments (this person's files in this session):",
+            json.dumps(packet.get("attachments"), ensure_ascii=False, default=str),
             "",
-            f"new_uploads:\n{json.dumps(packet.get('new_uploads'), ensure_ascii=False, default=str)}",
+            "new_uploads (this person's new files this turn):",
+            json.dumps(packet.get("new_uploads"), ensure_ascii=False, default=str),
         ]
     )
     user_text = packet.get("current_user_message")
@@ -542,13 +572,12 @@ async def run_broker_turn(
         match_id=focused_match_id(ctx),
     )
     logger.debug(
-        "broker context session=%s role=%s lane=%s focus=%s open_matches=%s other_matches=%s attention=%s history=%s",
+        "broker context session=%s role=%s lane=%s focus=%s open_matches=%s attention=%s history=%s",
         ctx.session.id,
         packet.get("SESSION_ROLE"),
         packet.get("LANE"),
         packet.get("focus_match_id"),
         len(packet.get("open_matches") or []),
-        len(packet.get("other_matches") or []),
         packet.get("attention_pointer"),
         len(history),
     )
@@ -598,20 +627,28 @@ async def run_broker_turn(
 
     lane_id = focused_match_id(ctx)
     opened_from_request = reply_lane_id(ctx) is None and lane_id is not None
-    already_on_request = any(
-        message.role == "assistant" and not message.match_id
-        for message in ctx.current_user_messages
-    )
-    if opened_from_request and not already_on_request:
-        count = len(ctx.opened_match_ids) or 1
-        ack = (
-            REQUEST_LANE_OPENED_MATCHES_REPLY
-            if count > 1
-            else REQUEST_LANE_OPENED_MATCH_REPLY
+    if opened_from_request:
+        request_texts, match_texts = split_open_match_lane_replies(
+            messages, start=prefix_len
         )
-        await _persist_assistant_reply(ctx, ack, match_id=None)
-    for text in replies:
-        await _persist_assistant_reply(ctx, text, match_id=lane_id)
+        already_on_request = any(
+            message.role == "assistant" and not message.match_id
+            for message in ctx.current_user_messages
+        )
+        if not request_texts and not already_on_request:
+            count = len(ctx.opened_match_ids) or 1
+            request_texts = [
+                REQUEST_LANE_OPENED_MATCHES_REPLY
+                if count > 1
+                else REQUEST_LANE_OPENED_MATCH_REPLY
+            ]
+        for text in request_texts:
+            await _persist_assistant_reply(ctx, text, match_id=None)
+        for text in match_texts:
+            await _persist_assistant_reply(ctx, text, match_id=lane_id)
+    else:
+        for text in replies:
+            await _persist_assistant_reply(ctx, text, match_id=lane_id)
     ctx.session.updated_at = utc_now()
 
     logger.info(
