@@ -33,6 +33,7 @@ async def test_local_init_uses_create_all_and_never_drops(
     assert "date_of_birth" in sqls
     assert "match_id" in sqls
     assert "agent_match_reads" in sqls
+    assert "agent_suggested_matches" in sqls
     assert "ix_agent_messages_session_match" in sqls
 
 

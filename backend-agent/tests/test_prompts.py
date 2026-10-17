@@ -2,7 +2,6 @@ from app.agents.prompts import (
     BROKER_SYSTEM_PROMPT,
     BROKER_SYSTEM_PROMPT_DEV,
     BROKER_SYSTEM_PROMPT_FULL,
-    use_small_prompts,
     MATCH_CONTEXT_INSTRUCTION,
     MATCH_TIMEOUT_INSTRUCTION,
     NATURAL_FALLBACK_REPLY,
@@ -23,6 +22,7 @@ from app.agents.prompts import (
     TOOL_MESSAGE_PARTY_FULL,
     TOOL_OFFER_INTRODUCTION_FULL,
     TOOL_OPEN_MATCH_FULL,
+    TOOL_PRESENT_CANDIDATES_FULL,
     TOOL_REQUEST_ATTACHMENT_FULL,
     TOOL_SAVE_REQUEST_FULL,
     TOOL_SEARCH_COUNTERPARTIES_FULL,
@@ -33,6 +33,7 @@ from app.agents.prompts import (
     TOOL_UPDATE_NOTEBOOK_FULL,
     TOOL_UPDATE_REQUEST_FULL,
     USER_MESSAGE_INSTRUCTION,
+    use_small_prompts,
 )
 
 _SECTION_HEADERS = (
@@ -53,6 +54,7 @@ _ALL_TOOLS = (
     "search_counterparties",
     "search_again",
     "evaluate_pair",
+    "present_candidates",
     "open_match",
     "message_party",
     "update_notebook",
@@ -176,22 +178,31 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
     assert "this person's files" in each
     assert "other_files" in each
     assert "shared_with_you" in each
+    assert "pending_questions" in each
     work = BROKER_SYSTEM_PROMPT_FULL.split("== HOW YOU WORK ==")[1].split("==")[0].lower()
     assert "optional, not mandatory" in work
     assert "never treat a skipped question as a stop" in work
     assert "request_attachment" in work
     assert "toward a connection" in work
     assert "one question" not in work
-    assert "open_match from the request lane" in work
+    assert "present_candidates" in work
     assert "ask_other_person" in work
     assert "information, not an order" in work
     assert "do not open a match yet" in work
-    assert "one possible pair" in work
+    assert "evaluate the stored candidates again" in work
+    assert "pending_clarify" in work
+    assert "pending_questions" in work
+    assert "together" in work
+    assert "marks interested" in work
     assert "several open matches" in work
     small_work = BROKER_SYSTEM_PROMPT_DEV.split("== HOW YOU WORK ==")[1].split("==")[0].lower()
-    assert "open_match call" in small_work
+    assert "present_candidates" in small_work
     assert "ask_other_person" in small_work
-    assert "one possible pair" in small_work
+    assert "evaluate stored candidates again" in small_work
+    assert "pending_clarify" in small_work
+    assert "pending_questions" in small_work
+    assert "together" in small_work
+    assert "until interested" in small_work
     assert "several open matches" in small_work
 
 
@@ -205,7 +216,11 @@ def test_tools_describe_effects_not_sequences() -> None:
     assert "anonymized" in TOOL_SEARCH_COUNTERPARTIES_FULL.lower()
     assert "candidate_id" in TOOL_EVALUATE_PAIR_FULL
     assert "recommended_action" in TOOL_EVALUATE_PAIR_FULL.lower()
+    assert "interested/skip" in TOOL_PRESENT_CANDIDATES_FULL.lower()
+    assert "together" in TOOL_PRESENT_CANDIDATES_FULL.lower()
+    assert "other person is not notified" in TOOL_PRESENT_CANDIDATES_FULL.lower()
     assert "other person's chat stays unchanged" in TOOL_OPEN_MATCH_FULL.lower()
+    assert "marked interested" in TOOL_OPEN_MATCH_FULL.lower()
     assert "other person's private chat" in TOOL_MESSAGE_PARTY_FULL.lower()
     assert "does not take a party name" in TOOL_MESSAGE_PARTY_FULL.lower()
     assert "acknowledgement" in TOOL_MESSAGE_PARTY_FULL.lower()
@@ -233,6 +248,7 @@ def test_tools_describe_effects_not_sequences() -> None:
             TOOL_INDEX_REQUEST_FULL,
             TOOL_SEARCH_COUNTERPARTIES_FULL,
             TOOL_EVALUATE_PAIR_FULL,
+            TOOL_PRESENT_CANDIDATES_FULL,
             TOOL_OPEN_MATCH_FULL,
             TOOL_MESSAGE_PARTY_FULL,
             TOOL_UPDATE_NOTEBOOK_FULL,
@@ -297,6 +313,7 @@ def test_helper_prompts_use_spec_contracts() -> None:
         assert "ask_other_person" in eval_prompt
         assert "do not open yet" in eval_prompt.lower()
         assert "next_questions" in eval_prompt
+        assert "clarifying_questions" in eval_prompt
         assert "buy / rent" not in eval_prompt.lower()
         assert "housing vs hiring" not in eval_prompt.lower()
     assert len(SEMANTIC_INDEX_PROMPT_DEV) < len(SEMANTIC_INDEX_PROMPT_FULL)

@@ -17,7 +17,7 @@ from app.services.living_request import (
     living_request_from_model,
     redacted_living_request,
 )
-from app.services.possible_pair import possible_pair
+from app.services.suggestions import all_pending_questions, list_suggestions, packet_snapshot
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_CONNECTED,
@@ -149,7 +149,12 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
         session_id=ctx.session.id,
         new_ids=ctx.new_attachment_ids,
     )
-    pending = possible_pair(ctx.request.details) if ctx.request is not None and not focus_id else None
+    suggested: list[dict[str, Any]] = []
+    pending_questions: list[str] = []
+    if ctx.request is not None and not focus_id:
+        suggestion_rows = await list_suggestions(ctx.db, ctx.request.id)
+        suggested = [packet_snapshot(row) for row in suggestion_rows]
+        pending_questions = all_pending_questions(suggestion_rows)
     live_open_count = 0
     if ctx.request is not None:
         live_open_count = await open_match_count(ctx.db, ctx.request.id)
@@ -161,7 +166,8 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
         "living_request": living,
         "open_matches": open_matches,
         "open_match_count": live_open_count,
-        "possible_pair": pending,
+        "suggested_matches": suggested,
+        "pending_questions": pending_questions,
         "recent_events": recent_events,
         "attention_pointer": attention,
         "current_user_message": user_text,

@@ -60,7 +60,7 @@ def test_apply_request_patch_updates_only_provided_fields() -> None:
     assert budget_only["timeline"] == ""
 
 
-def test_apply_request_patch_keeps_a_possible_pair() -> None:
+def test_apply_request_patch_drops_a_legacy_possible_pair() -> None:
     details = {
         "objective": "Find a roommate in Pune",
         "budget": "",
@@ -79,7 +79,7 @@ def test_apply_request_patch_keeps_a_possible_pair() -> None:
     }
     patched = apply_request_patch(details, {"budget": "15k"})
     assert patched["budget"] == "15k"
-    assert patched["possible_pair"]["other_request_id"] == "req-b"
+    assert "possible_pair" not in patched
 
 
 def test_counterpart_brief_stub_does_not_include_the_other_bio() -> None:

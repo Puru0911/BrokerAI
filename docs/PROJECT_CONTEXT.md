@@ -33,17 +33,17 @@ user message
   → FastAPI chat route
   → Broker Agent (ChatGroq / ChatOpenRouter / ChatOpenAI.bind_tools loop)
        think / save_request / update_request / search_counterparties /
-       evaluate_pair / open_match / message_party / update_notebook /
-       close_match / accept_match / share_contacts
+       evaluate_pair / present_candidates / open_match / message_party /
+       update_notebook / close_match / accept_match / share_contacts
   → Postgres + Chroma
   → reply to the current user (and optionally a named party via message_party)
 ```
 
-One agent talks to every party. A request may have several live matches (`MAX_OPEN_MATCHES_PER_REQUEST`, default 3) and at most one possible pair waiting on a clarifying question. Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus only). The model does not receive a roster of other live matches. `update_request` always patches the shared living brief, including from a match lane when this person adds a detail that applies beyond that pair. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
+One agent talks to every party. Screening is one-sided: `evaluate_pair` can screen up to `MAX_PAIR_PER_REQUEST` (default 3) candidates and stores them on `agent_suggested_matches` for **this request only**. The counterpart never sees that evaluation. Ready candidates appear on Your request as Interested/Skip cards (`present_candidates`). A match lane exists only after Interested (or Request photo, which counts as Interested). Open matches are uncapped. Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus only; request-lane packets include `suggested_matches`). The model does not receive a roster of other live matches. `update_request` always patches the shared living brief, including from a match lane when this person adds a detail that applies beyond that pair. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
 
 Do not split this into intake vs mediation agents. The product is one broker with the full tool set on every turn. Parallelism already exists as fire-and-forget `match_context` turns on the other party's matching lane.
 
-Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party(match_id, context)` queues a **separate** broker turn on the other party's **match lane** (`trigger=match_context`, `focus_match_id` set) after this request commits. With `candidate_id` and no open match, the same tool queues a request-lane turn for a possible pair (a clarifying question to the counterpart; no tab yet). It returns an ack only and does not wait for their reply. This lane's bubble is the final reply. The other human's answer is a later `user_message` on their session. After they answer, the model decides whether to `open_match`. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
+Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. There is no automatic `request_ready` turn after a user message — if the brief should be matched now, the agent indexes and searches in the same turn. `message_party` only queues a **separate** broker turn on the other party's **match lane** (`trigger=match_context`, `focus_match_id` set) after this request commits, and only for an open match. Pre-open outreach is refused. After Interested, Python opens the pair and runs a `request_ready` kickoff on the opener's new match lane so `message_party` can reach the other person. It returns an ack only and does not wait for their reply. This lane's bubble is the final reply. The other human's answer is a later `user_message` on their session. `ask_clarifying_question` stays on Your request; when they answer, the agent re-evaluates stored `suggested_matches`. `ask_other_person` waits until a match is open. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
 
 `backend/` is the earlier graph prototype. It is not the active architecture.
 
@@ -71,6 +71,7 @@ New tables so this service can share Postgres with the old folder without collid
 - `agent_sessions`, `agent_messages` (`match_id` null = request lane, set = that match lane). Deleting a session that still has matches tombstones `session.status=deleted` and closes those matches with `request_closed` so the remaining party keeps a match tab; `match_id` is `ON DELETE SET NULL`, so dropping the match row would dump that chat onto Your request.
 - `agent_requests` — one living brief per session (kept closed when the owner deletes a session that still has matches)
 - `agent_matches` — a pair of briefs plus `notebook` (shared facts and outstanding question)
+- `agent_suggested_matches` — source-only screened candidates (strong_match / pending_clarify / presented / interested / skipped) plus the request-lane card message. Pending rows carry every screener question; the request-lane packet also lists them together as `pending_questions`.
 - `agent_match_reads` — per-user last-read for match-lane unread badges
 - `agent_events` — append-only match audit
 - `agent_connections` — created when a party presses Connect; opens a direct 1:1 chat
@@ -98,7 +99,7 @@ Statuses are intentionally short:
 - Match: `open` | `accepted` | `connected` | `closed` (`close_reason` is `skip`, `reject`, `withdraw`, `expired`, or `request_closed`)
 - Session: `open` | `closed`
 
-`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). Closing one pair leaves other open matches on the request. `message_party` writes into the other party's match lane for an open pair. A clarifying question for this user stays in this chat (`ask_clarifying_question`). A clarifying question only the counterpart can answer (`ask_other_person`) uses `message_party` with `candidate_id` on their request lane; no match is open until they answer and the model opens one.
+`skip_match` / `reject_match` may close an `accepted` or `connected` match (status becomes `closed`). Closing one pair leaves other open matches on the request. `message_party` writes into the other party's match lane for an open pair. A clarifying question for this user stays in this chat (`ask_clarifying_question`); stored suggestions are re-evaluated after they answer. `ask_other_person` is asked on the match lane only after Interested. Skip on a suggestion card excludes that candidate from later fills for this request. Unacted presented cards stay and can appear with new ones on the next screening turn, up to `MAX_PAIR_PER_REQUEST`.
 
 `waiting_match_id` on a request is attention (“we last asked this person about this match”). It does not route the next message. The POST body `match_id` (and outreach `focus_match_id`) chooses the lane. Frontend match tabs send that id; the request tab omits it.
 
@@ -111,9 +112,10 @@ Bound schemas describe what each tool does. The broker chooses among them.
 - `update_request` — patch only changed fields
 - `index_request` — make the brief searchable
 - `search_counterparties` / `search_again` — anonymized RAG candidates
-- `evaluate_pair` — screens one retrieved pair; recommendation is information for the broker
-- `open_match` — start working a pair (up to `MAX_OPEN_MATCHES_PER_REQUEST` on each side); seeds the match notebook
-- `message_party` — queue a later broker turn in the other person's chat (open match lane, or request lane via `candidate_id` for a possible pair)
+- `evaluate_pair` — screens up to `MAX_PAIR_PER_REQUEST` candidate briefs; stores suggestions on this request only; recommendation is information
+- `present_candidates` — writes Interested/Skip cards on the request lane; does not notify the other person
+- `open_match` — start working a pair this person already marked Interested; seeds the match notebook
+- `message_party` — queue a later broker turn in the other person's chat on an open match lane
 - `update_notebook` — shared terms plus agent_note/next_action for later turns
 - `skip_match` / `reject_match` — close a pair
 - `accept_match` — this user agreed; cards share when both have
@@ -124,7 +126,7 @@ Bound schemas describe what each tool does. The broker chooses among them.
 - `share_attachment` — deliver to the other party; personal items ask permission
 - `record_share_grant` — chat consent for a personal share
 
-Python still enforces: no matching yourself, no contacts before accept, identity redaction in cross-party text before accept, open-match cap per request (default 3, both sides), skip-reopen only after a brief changes. Match tools default `match_id` to the focused lane.
+Python still enforces: no matching yourself, no contacts before accept, identity redaction in cross-party text before accept, no `open_match` until Interested, no `message_party` without an open match, suggestion present cap `MAX_PAIR_PER_REQUEST` (default 3), skip-reopen only after a brief changes. Match tools default `match_id` to the focused lane.
 
 ### LLM
 

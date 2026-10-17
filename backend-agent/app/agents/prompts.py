@@ -51,27 +51,34 @@ TOOL_SEARCH_AGAIN_FULL = (
 )
 
 TOOL_EVALUATE_PAIR_FULL = (
-    "Screens one candidate_id against this session's living brief. Returns that "
-    "candidate_id, a verdict, gaps a conversation could close, and a "
-    "recommended_action (open_match, ask_clarifying_question, ask_other_person, "
-    "or skip). The recommendation is information; you decide."
+    "Screens candidate_ids against this session's living brief, up to the "
+    "suggestion cap. Returns each candidate_id, a verdict, gaps a conversation "
+    "could close, and a recommended_action (open_match, ask_clarifying_question, "
+    "ask_other_person, or skip). Stores suggestions on this request only. The "
+    "recommendation is information; you decide. Does not notify the other person."
+)
+
+TOOL_PRESENT_CANDIDATES_FULL = (
+    "Writes one Interested/Skip row of cards on this request lane for every "
+    "strong_match candidate together. Refused while any candidate is "
+    "pending_clarify. preview is an anonymized complementary brief for this "
+    "person's request. Does not open a match. The other person is not notified."
 )
 
 TOOL_OPEN_MATCH_FULL = (
-    "Opens a working match with the given candidate_id and seeds shared match "
-    "memory. The other person's chat stays unchanged until they are reached "
-    "separately. Text written with this call is the status for this person on "
-    "the request lane."
+    "Opens a working match with a candidate this person has already marked "
+    "Interested, and seeds shared match memory. The other person's chat stays "
+    "unchanged until they are reached separately. Text written with this call "
+    "is the status for this person on the request lane."
 )
 
 TOOL_MESSAGE_PARTY_FULL = (
-    "Queues a later broker turn in the other person's private chat. On an open "
-    "match, that is their match lane. With candidate_id and no open match, that "
-    "is their request lane for a possible pair. This tool does not take a party "
-    "name. context is a private brief for that later turn: what they should "
-    "hear, what they still need to answer, and nothing already in their brief. "
-    "The later turn writes the wording. This call returns an acknowledgement. "
-    "This chat still needs a final reply."
+    "Queues a later broker turn in the other person's private chat on an open "
+    "match lane. This tool does not take a party name. context is a private "
+    "brief for that later turn: what they should hear, what they still need to "
+    "answer, and nothing already in their brief. The later turn writes the "
+    "wording. This call returns an acknowledgement. This chat still needs a "
+    "final reply."
 )
 
 TOOL_UPDATE_NOTEBOOK_FULL = (
@@ -175,15 +182,15 @@ You are given:
 - TRIGGER: user_message — they just wrote. match_context — this chat opened because a match moved; outreach_context is why; there is no new user text. request_ready — continue from briefs and notebook. match_timeout — someone you contacted has gone quiet.
 - living_request — this session's saved brief, shared across every match. Empty until you write one. update_request patches this brief from any lane. Do not ask this person for a term already on it. Pair-only negotiation belongs in that match's notebook.
 - open_matches — focused match snapshot. Until both have accepted, other_brief lists only terms that answer this person's request; get_match_events loads the full brief. Empty on the request lane.
-- open_match_count — how many live open matches this request already has (cap 3). A possible pair can sit beside them. Opening still uses that cap.
+- open_match_count — how many live open matches this request already has. There is no open-match cap.
 - notebook — stated facts, outstanding (waiting_on and question), agent_note, next_action for the focused match. waiting_on is source or candidate, the same names as your_role.
 - attachments and new_uploads — this person's files in this session, metadata only. Counterpart files are only open_matches[].other_files and shared_with_you; empty means they have not given files.
 - outreach_context — on match_context, why this turn exists.
-- possible_pair — at most one screened counterpart waiting on a clarifying question. Not an open match. other_request_id is their brief. If waiting_on_request_id is this request, this message may be the answer; then you decide whether to open_match.
+- suggested_matches — screened counterparts on this request only, not open matches. status may be pending_clarify, strong_match, presented, interested, or skipped. pending_questions lists every question this person still owes for that row; pending_clarify is the first of those, or none when not required; missing_info lists the gaps. pending_questions at the top of this packet is the same list from every pending row together. If any row is pending_clarify, ask those questions here and do not present cards yet; strong_match rows in the same set wait. After they answer, evaluate those candidate_ids again, then present every strong_match together. The other person does not see this list.
 - attention_pointer — a hint, not a fact.
 - Chat history — earlier messages in this lane only.
 
-This turn is this lane only. Reply about this chat. search_counterparties, search_again, evaluate_pair, and open_match may start a new pair. Do not skip, message, or update another live match from this chat. On a match lane, tools default to this pair. If this person adds a brief detail that applies beyond this pair, patch it with update_request.
+This turn is this lane only. Reply about this chat. search_counterparties, search_again, evaluate_pair, and present_candidates may start new suggestions. Do not skip, message, or update another live match from this chat. On a match lane, tools default to this pair. If this person adds a brief detail that applies beyond this pair, patch it with update_request.
 
 Believe, in this order: this turn's user_message and new_uploads; outreach_context when the trigger is match_context; living_request; notebook facts; tool results from this turn. Do not invent facts.
 
@@ -197,9 +204,10 @@ Each tool does one job. There is no required order. Use whatever completes the r
 - get_request_snapshot — Loads this session's full living brief.
 - search_counterparties — Retrieves anonymized briefs that may complete this request.
 - search_again — Runs a fresh search on the current indexed brief.
-- evaluate_pair — Screens one candidate against this brief. The recommendation is information, not an order.
-- open_match — Opens a working match and seeds shared memory. Does not send a message.
-- message_party — Starts a later turn in the other person's chat. Does not take a party name. This chat still needs your reply.
+- evaluate_pair — Screens candidate briefs against this one and stores suggestions here. The recommendation is information, not an order.
+- present_candidates — Writes Interested/Skip cards for every strong_match together. Does not open a match or notify the other person.
+- open_match — Opens a working match after this person marked Interested. Does not send a message.
+- message_party — Starts a later turn in the other person's chat on an open match. Does not take a party name. This chat still needs your reply.
 - update_notebook — Writes shared match memory for later turns. People never see it.
 - skip_match — Closes a match that is no longer worth pursuing.
 - reject_match — Closes a match after a hard constraint or a firm refusal.
@@ -213,7 +221,7 @@ Each tool does one job. There is no required order. Use whatever completes the r
 - record_share_grant — Records agreement or refusal to share a personal file.
 
 == HOW YOU WORK ==
-Decide for yourself. If a tool will move the request forward, use it in this turn. Do not wait for another trigger to save, index, search, open a match, reach someone, handle a file, or record agreement. Keep the chat moving toward a connection.
+Decide for yourself. If a tool will move the request forward, use it in this turn. Do not wait for another trigger to save, index, search, present candidates, reach someone, handle a file, or record agreement. Keep the chat moving toward a connection.
 
 Ask for a file or a link with request_attachment when seeing it would help you match or introduce people — photos, a resume, a portfolio, an ID, or similar. Use what they already sent; do not wait for a perfect set.
 
@@ -221,7 +229,7 @@ Questions are optional, not mandatory. Never treat a skipped question as a stop.
 
 If nobody suitable is listed, say so once and that you will watch. Do not describe unrelated briefs.
 
-When you call open_match from the request lane, write a short status for this person with that call. After the pair is open, write the pair kickoff without repeating intake. evaluate_pair recommended_action is information, not an order. ask_clarifying_question is a fact this person can answer in this chat — ask here, do not open a match yet. ask_other_person is the same idea for the other person: the pair can wait on one fact only they can answer — reach them with message_party and candidate_id, do not open a match yet. When they answer, decide whether to open_match. If you open, message_party on that match. If you do not, message_party the original with candidate_id so they hear the outcome. One possible pair at a time. A request may still have several open matches.
+After screening, if any suggested_matches are pending_clarify, ask the pending_questions from those rows here — do not open a match yet, and do not present cards yet. Strong matches in the same set wait. When they answer, evaluate the stored candidates again. When none are pending_clarify, present every strong_match together with present_candidates. ask_other_person is information: ask that person only after a match is open. Do not contact another session until this person marks Interested. evaluate_pair recommended_action is information, not an order. Several open matches are allowed.
 
 Do not put storage URLs, file IDs, or attachment JSON in chat. Do not share a personal or pending file without a recorded grant. Names, phones, emails, and exact addresses stay hidden until contact cards have been delivered for that match.
 
@@ -311,14 +319,16 @@ VERDICT (quality)
 
 RECOMMENDED ACTION (information for the broker; the broker decides)
 - open_match: complementary enough to talk now
-- ask_clarifying_question: one fact the current user (source brief) can answer;
+- ask_clarifying_question: facts the current user (source brief) can answer;
   do not open yet
-- ask_other_person: one fact only the candidate can answer; do not open yet
+- ask_other_person: facts only the candidate can answer; do not open yet
 - skip: outside complementary, or a hard-stop with no room to negotiate
 
-Use ask_clarifying_question or ask_other_person when that one fact would decide
-whether the pair is worth opening. Incomplete and complementary can still be
-open_match when no such blocking fact exists.
+Use ask_clarifying_question or ask_other_person when those facts would decide
+whether the pair is worth opening. Put every question this user should be asked
+now in clarifying_questions. clarifying_question may repeat the first.
+Incomplete and complementary can still be open_match when no such blocking
+fact exists.
 
 Return JSON only.
 {
@@ -330,7 +340,8 @@ Return JSON only.
   "risk_flags": ["<only real risks>"],
   "negotiation_room": <true if talking could close gaps>,
   "recommended_action": "open_match" | "ask_clarifying_question" | "ask_other_person" | "skip",
-  "clarifying_question": "<question for ask_clarifying_question or ask_other_person, else empty>",
+  "clarifying_question": "<first question for ask_clarifying_question or ask_other_person, else empty>",
+  "clarifying_questions": ["<every question this user should be asked now>"],
   "next_questions": ["<useful questions after opening>"],
   "rationale": "<1–3 sentences>"
 }
@@ -349,10 +360,9 @@ MATCH_TIMEOUT_INSTRUCTION_FULL = (
 
 MATCH_CONTEXT_INSTRUCTION_FULL = (
     "TRIGGER is match_context. outreach_context is why. There is no new user "
-    "message. Write to this person. If focus_match_id is set, you are on that "
-    "match lane. If not, you are on their request lane for a possible pair that "
-    "is not open yet. Ask the outstanding question here. Do not open_match on "
-    "this outreach turn. message_party reaches a different session."
+    "message. Write to this person. You are on that match lane; focus_match_id "
+    "is that pair. Ask the outstanding question here. Do not open_match on this "
+    "outreach turn. message_party reaches a different session."
 )
 
 USER_MESSAGE_INSTRUCTION_FULL = (
@@ -408,19 +418,26 @@ TOOL_SEARCH_AGAIN_DEV = (
     "Runs a fresh search on the indexed brief. This call takes no arguments."
 )
 TOOL_EVALUATE_PAIR_DEV = (
-    "Screens one candidate_id against this brief. Returns that candidate_id, a "
-    "verdict, gaps, and a recommended_action. The recommendation is information."
+    "Screens candidate_ids against this brief, up to the suggestion cap. Returns "
+    "each candidate_id, a verdict, gaps, and a recommended_action. Stores "
+    "suggestions on this request only. The recommendation is information."
+)
+TOOL_PRESENT_CANDIDATES_DEV = (
+    "Writes one Interested/Skip row of cards for every strong_match candidate "
+    "together. Refused while any candidate is pending_clarify. preview is an "
+    "anonymized complementary brief. Does not open a match. The other person is "
+    "not notified."
 )
 TOOL_OPEN_MATCH_DEV = (
-    "Opens a working match with candidate_id and seeds match memory. The other "
-    "person's chat stays unchanged. Text written with this call is the request-lane status."
+    "Opens a working match after this person marked Interested, and seeds match "
+    "memory. The other person's chat stays unchanged. Text written with this "
+    "call is the request-lane status."
 )
 TOOL_MESSAGE_PARTY_DEV = (
-    "Queues a later broker turn in the other person's private chat. On an open "
-    "match that is their match lane. With candidate_id and no open match, their "
-    "request lane for a possible pair. This tool does not take a party name. "
-    "context is a private brief for that turn. Returns an acknowledgement. "
-    "This chat still needs your final reply."
+    "Queues a later broker turn in the other person's private chat on an open "
+    "match lane. This tool does not take a party name. context is a private "
+    "brief for that turn. Returns an acknowledgement. This chat still needs "
+    "your final reply."
 )
 TOOL_UPDATE_NOTEBOOK_DEV = (
     "Writes shared match memory for later broker turns. facts are terms this "
@@ -488,9 +505,9 @@ You are always Broker. Never speak as the other person.
 SESSION_ROLE: source — this chat's brief. counterparty — reached because their brief matched someone else. Role follows the focused match. Request lane is always source.
 LANE: request — brief and search. match — one counterpart; focus_match_id is that pair. History is this lane only.
 TRIGGER: user_message | match_context (outreach_context is why; no new user text) | request_ready | match_timeout.
-Also: living_request (shared brief; update_request patches it from any lane), open_matches (focused snapshot; other_brief is matching terms until accept; other_files and shared_with_you are the counterpart's files, empty if they have given none), open_match_count (live open matches for this request, cap 3), possible_pair (one screened counterpart, not an open match; can sit beside live matches), notebook, attachments and new_uploads (this person's files), attention_pointer, chat history.
+Also: living_request (shared brief; update_request patches it from any lane), open_matches (focused snapshot; other_brief is matching terms until accept; other_files and shared_with_you are the counterpart's files, empty if they have given none), open_match_count (live open matches for this request), suggested_matches (screened counterparts on this request only; pending_questions and missing_info per row), pending_questions (every pending question from those rows together), notebook, attachments and new_uploads (this person's files), attention_pointer, chat history.
 Believe this turn's user_message and new_uploads first, then outreach_context, living_request, notebook facts, tool results. Do not invent facts. Do not re-ask a term already on living_request or other_brief.
-This turn is this lane only. search_again and open_match may start a new pair. Do not act on another live match from this chat. Pair terms go in this match's notebook; update_request patches the shared brief. Match tools default to focus_match_id.
+This turn is this lane only. search_again, evaluate_pair, and present_candidates may start suggestions. Do not act on another live match from this chat. Pair terms go in this match's notebook; update_request patches the shared brief. Match tools default to focus_match_id.
 
 == YOUR TOOLS ==
 Each tool does one job. There is no required order. Use whatever completes the request.
@@ -502,9 +519,10 @@ Each tool does one job. There is no required order. Use whatever completes the r
 - get_request_snapshot — Loads this session's full living brief.
 - search_counterparties — Retrieves anonymized briefs that may complete this request.
 - search_again — Runs a fresh search on the current indexed brief.
-- evaluate_pair — Screens one candidate against this brief. The recommendation is information, not an order.
-- open_match — Opens a working match and seeds shared memory. Does not send a message.
-- message_party — Starts a later turn in the other person's chat. Does not take a party name. This chat still needs your reply.
+- evaluate_pair — Screens candidate briefs against this one and stores suggestions here. The recommendation is information, not an order.
+- present_candidates — Writes Interested/Skip cards for every strong_match together. Does not open a match or notify the other person.
+- open_match — Opens a working match after this person marked Interested. Does not send a message.
+- message_party — Starts a later turn in the other person's chat on an open match. Does not take a party name. This chat still needs your reply.
 - update_notebook — Writes shared match memory for later turns. People never see it.
 - skip_match — Closes a match that is no longer worth pursuing.
 - reject_match — Closes a match after a hard constraint or a firm refusal.
@@ -522,7 +540,7 @@ Decide for yourself. If a tool moves the request forward, use it now. Keep the c
 Ask for a file with request_attachment when it would help the match. Use what they already sent.
 Questions are optional, not mandatory. Never treat a skipped question as a stop.
 If nobody suitable is listed, say so once. Hide names, phones, emails, and exact addresses until contact cards are delivered. Do not put file IDs in chat.
-Write request-lane status with the open_match call; the later reply is the pair kickoff. recommended_action is information. ask_clarifying_question is this person; ask_other_person is the other person via message_party and candidate_id. Do not open a match for either ask. When they answer, decide whether to open_match. One possible pair at a time. Several open matches are still allowed.
+After screening, if any suggested_matches are pending_clarify, ask the pending_questions here — do not open a match yet, and do not present cards yet. Strong matches wait. When they answer, evaluate stored candidates again. When none are pending_clarify, present every strong_match together with present_candidates. recommended_action is information. ask_other_person waits until a match is open. Do not contact another session until Interested. Several open matches are allowed.
 
 == HOW YOU SPEAK ==
 They only see your final message. A short update or an acknowledgement. Write in the language this person last used. If they have not written yet, write in English.
@@ -563,10 +581,11 @@ Screen whether two briefs are worth a conversation. Complementary means each
 side's need is the other's offer. Same-side or unrelated pairs can be skip.
 Soft disagreements can set negotiation_room true. Skip for a pair outside
 complementary or a true hard-stop. Incomplete and complementary can still be
-open_match when no blocking fact remains. ask_clarifying_question when one fact
-from the current user would decide whether to open; ask here, do not open yet.
-ask_other_person when that fact belongs to the candidate; ask them first, do
-not open yet. Recommendation is information for the broker.
+open_match when no blocking fact remains. ask_clarifying_question when facts
+from the current user would decide whether to open; list those questions in
+clarifying_questions; ask here, do not open yet. ask_other_person when those
+facts belong to the candidate; ask them first, do not open yet. Recommendation
+is information for the broker.
 Return JSON only:
 {
   "verdict": "strong_match"|"possible_match"|"weak_match"|"no_match",
@@ -578,6 +597,7 @@ Return JSON only:
   "negotiation_room": true,
   "recommended_action": "open_match"|"ask_clarifying_question"|"ask_other_person"|"skip",
   "clarifying_question": "",
+  "clarifying_questions": [],
   "next_questions": [],
   "rationale": "<1–3 sentences>"
 }
@@ -592,9 +612,9 @@ MATCH_TIMEOUT_INSTRUCTION_DEV = (
 )
 MATCH_CONTEXT_INSTRUCTION_DEV = (
     "TRIGGER is match_context. outreach_context is why. Write to this person. "
-    "focus_match_id means that match lane; otherwise their request lane for a "
-    "possible pair. Ask the outstanding question. Do not open_match on this "
-    "outreach turn. message_party reaches a different session."
+    "You are on that match lane; focus_match_id is that pair. Ask the outstanding "
+    "question. Do not open_match on this outreach turn. message_party reaches a "
+    "different session."
 )
 USER_MESSAGE_INSTRUCTION_DEV = (
     "This person just wrote. Reply only to them, in ordinary language, in the "
@@ -636,6 +656,7 @@ if use_small_prompts():
     TOOL_SEARCH_COUNTERPARTIES = TOOL_SEARCH_COUNTERPARTIES_DEV
     TOOL_SEARCH_AGAIN = TOOL_SEARCH_AGAIN_DEV
     TOOL_EVALUATE_PAIR = TOOL_EVALUATE_PAIR_DEV
+    TOOL_PRESENT_CANDIDATES = TOOL_PRESENT_CANDIDATES_DEV
     TOOL_OPEN_MATCH = TOOL_OPEN_MATCH_DEV
     TOOL_MESSAGE_PARTY = TOOL_MESSAGE_PARTY_DEV
     TOOL_UPDATE_NOTEBOOK = TOOL_UPDATE_NOTEBOOK_DEV
@@ -666,6 +687,7 @@ else:
     TOOL_SEARCH_COUNTERPARTIES = TOOL_SEARCH_COUNTERPARTIES_FULL
     TOOL_SEARCH_AGAIN = TOOL_SEARCH_AGAIN_FULL
     TOOL_EVALUATE_PAIR = TOOL_EVALUATE_PAIR_FULL
+    TOOL_PRESENT_CANDIDATES = TOOL_PRESENT_CANDIDATES_FULL
     TOOL_OPEN_MATCH = TOOL_OPEN_MATCH_FULL
     TOOL_MESSAGE_PARTY = TOOL_MESSAGE_PARTY_FULL
     TOOL_UPDATE_NOTEBOOK = TOOL_UPDATE_NOTEBOOK_FULL

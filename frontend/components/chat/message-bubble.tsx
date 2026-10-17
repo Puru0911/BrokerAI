@@ -10,6 +10,7 @@ import {
   parseAttachmentShare
 } from "@/components/chat/attachment-cards"
 import { ChatText } from "@/components/chat/chat-text"
+import { CandidateDeck, parseCandidateDeck } from "@/components/chat/candidate-card"
 import { ContactCard, parseContactCard } from "@/components/chat/contact-card"
 import { cn } from "@/lib/cn"
 import type { BrokerMessage } from "@/lib/api/broker"
@@ -24,6 +25,12 @@ export type MessageActions = {
   onRequestUpload: (requestId: string, files: File[]) => void
   grantingAttachmentId: string | null
   onGrant: (attachmentId: string, matchId: string, granted: boolean) => void
+  suggestingId: string | null
+  onSuggestion: (
+    suggestionId: string,
+    action: "interested" | "skip",
+    attachmentId?: string
+  ) => void
 }
 
 export function MessageBubble({
@@ -38,11 +45,13 @@ export function MessageBubble({
   const requestCard = parseAttachmentRequest(message.content)
   const permissionCard = parseAttachmentPermission(message.content)
   const shareCard = parseAttachmentShare(message.content)
+  const candidateDeck = parseCandidateDeck(message.content)
   const attachments = message.attachments || []
   const hidePlainText = Boolean(
-    contactCard || requestCard || permissionCard || shareCard
+    contactCard || requestCard || permissionCard || shareCard || candidateDeck
   )
   const isStructured = hidePlainText
+  const isCandidateDeck = Boolean(candidateDeck && !isUser)
 
   return (
     <div
@@ -54,12 +63,16 @@ export function MessageBubble({
       <div
         className={cn(
           "box-border min-w-0 space-y-3 overflow-hidden px-4 py-3 text-sm leading-6",
-          isStructured
-            ? "w-full max-w-[min(100%,40rem)]"
-            : "w-fit max-w-[min(100%,36rem)]",
+          isCandidateDeck
+            ? "w-full max-w-none overflow-visible bg-transparent p-0"
+            : isStructured
+              ? "w-full max-w-[min(100%,40rem)]"
+              : "w-fit max-w-[min(100%,36rem)]",
           isUser
             ? "rounded-3xl rounded-br-md bg-user text-white"
-            : "rounded-3xl rounded-bl-md border border-line bg-surface text-ink"
+            : isCandidateDeck
+              ? "rounded-none border-0"
+              : "rounded-3xl rounded-bl-md border border-line bg-surface text-ink"
         )}
       >
         {contactCard && !isUser ? (
@@ -98,6 +111,20 @@ export function MessageBubble({
             payload={shareCard}
             attachments={attachments}
             accessToken={actions.accessToken}
+          />
+        ) : null}
+        {candidateDeck && !isUser ? (
+          <CandidateDeck
+            payload={candidateDeck}
+            accessToken={actions.accessToken}
+            busyId={actions.suggestingId}
+            onInterested={(suggestionId) =>
+              actions.onSuggestion(suggestionId, "interested")
+            }
+            onSkip={(suggestionId) => actions.onSuggestion(suggestionId, "skip")}
+            onRequestPhoto={(suggestionId, attachmentId) =>
+              actions.onSuggestion(suggestionId, "interested", attachmentId)
+            }
           />
         ) : null}
         {!hidePlainText && message.content ? (

@@ -12,6 +12,8 @@ from app.services.attachments import (
     AttachmentError,
     _share_card_item,
     apply_permission_grant_status,
+    blur_image_bytes,
+    blur_storage_key,
     can_share_directly,
     counterpart_file_inventory,
     extract_urls,
@@ -22,6 +24,7 @@ from app.services.attachments import (
     normalize_content_type,
     owner_and_recipient_requests,
     parse_structured_card,
+    placeholder_blur_jpeg,
     sanitize_filename,
     stored_basename,
     upload_notice,
@@ -304,3 +307,23 @@ async def test_memory_store_roundtrip() -> None:
     await store.delete("u/s/a/file.pdf")
     with pytest.raises(FileNotFoundError):
         await store.fetch("u/s/a/file.pdf")
+
+
+def test_blur_storage_key_sits_next_to_the_original() -> None:
+    assert blur_storage_key("user/session/att/file.jpg") == "user/session/att/blur.jpg"
+    assert blur_storage_key("file.jpg") == "blur.jpg"
+
+
+def test_blur_image_bytes_returns_jpeg_smaller_than_source() -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (240, 240), (180, 40, 40)).save(buffer, format="JPEG", quality=90)
+    original = buffer.getvalue()
+    blurred = blur_image_bytes(original)
+    assert blurred != original
+    assert blurred[:2] == b"\xff\xd8"
+    placeholder = placeholder_blur_jpeg()
+    assert placeholder[:2] == b"\xff\xd8"

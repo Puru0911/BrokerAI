@@ -3,7 +3,7 @@ from unittest.mock import AsyncMock, patch
 from app.agents.context import OutreachJob
 from app.agents.prompts import MATCH_CONTEXT_INSTRUCTION
 from app.agents.runtime import _trigger_instruction
-from app.services.outreach import schedule_outreach
+from app.services.outreach import schedule_match_kickoff, schedule_outreach
 
 
 def test_match_context_instruction_is_for_this_chat() -> None:
@@ -42,7 +42,7 @@ def test_schedule_outreach_does_not_run_the_turn_inline() -> None:
     run.assert_not_called()
 
 
-def test_schedule_possible_pair_outreach_uses_request_id() -> None:
+def test_schedule_outreach_skips_jobs_without_a_match() -> None:
     jobs = [
         OutreachJob(
             match_id=None,
@@ -63,5 +63,23 @@ def test_schedule_possible_pair_outreach_uses_request_id() -> None:
         patch("app.services.outreach.run_match_context_turn", new_callable=AsyncMock) as run,
     ):
         schedule_outreach(jobs)
-    assert created == ["outreach-req-b-None"]
+    assert created == []
     run.assert_not_called()
+
+
+def test_schedule_match_kickoff_does_not_run_inline() -> None:
+    created: list[object] = []
+
+    def fake_create_task(coro, name=None):
+        created.append(name)
+        coro.close()
+
+    with patch("app.services.outreach.asyncio.create_task", side_effect=fake_create_task):
+        schedule_match_kickoff(
+            match_id="match-1",
+            session_id="session-a",
+            request_id="req-a",
+            user_id="user-a",
+            context="This person marked Interested.",
+        )
+    assert created == ["kickoff-match-1"]

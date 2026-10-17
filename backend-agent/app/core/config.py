@@ -55,7 +55,10 @@ class Settings(BaseSettings):
     # full = production copy. small / compressed / compact = shorter tool and helper prompts.
     AGENT_PROMPT_SIZE: str = "full"
     MATCH_TIMEOUT_HOURS: int = 48
-    MAX_OPEN_MATCHES_PER_REQUEST: int = 3
+    # How many screened candidates may be presented at once on a request.
+    MAX_PAIR_PER_REQUEST: int = 3
+    # Deprecated alias; open matches are uncapped. Kept so old env files still load.
+    MAX_OPEN_MATCHES_PER_REQUEST: int | None = None
 
     LOG_LEVEL: str = "DEBUG"
     LOG_FILE: str = "logs/brokerai.log"

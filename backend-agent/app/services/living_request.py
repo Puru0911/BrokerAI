@@ -4,7 +4,6 @@ from typing import Any
 
 from app.agents.tool_call_repair import coerce_str_list
 from app.db.models import AgentRequest
-from app.services.possible_pair import POSSIBLE_PAIR_KEY, possible_pair, set_possible_pair
 from app.services.privacy import public_details, redact_identity
 
 
@@ -47,11 +46,6 @@ def apply_request_patch(details: dict[str, Any] | None, patch: dict[str, Any]) -
             current[key] = coerce_str_list(value)
         elif key in str_fields:
             current[key] = str(value).strip()
-    pending = possible_pair(details)
-    if pending is not None:
-        current = set_possible_pair(current, pending)
-    elif details and POSSIBLE_PAIR_KEY in details:
-        current.pop(POSSIBLE_PAIR_KEY, None)
     return current
 
 

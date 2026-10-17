@@ -20,7 +20,6 @@ from app.agents.prompts import (
 )
 from app.agents.tool_call_repair import coerce_optional_str_list
 from app.agents.tools._common import adopt_focus_if_idle, make_tool, owned_match
-from app.core.config import settings
 from app.db.models import AgentMatch, AgentMessage, AgentRequest
 from app.services.introduction import (
     IntroductionError,
@@ -29,29 +28,23 @@ from app.services.introduction import (
     upsert_connect_offer,
 )
 from app.services.living_request import counterpart_brief_stub, redacted_living_request
-from app.services.possible_pair import (
-    persist_possible_pair,
-    possible_pair,
-    possible_pair_entry,
-)
 from app.services.privacy import json_result, redact_identity
+from app.services.suggestions import SUGGESTION_INTERESTED, suggestion_for_pair
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_CLOSED,
-    MATCH_CONNECTED,
     MATCH_OPEN,
+    OpenMatchError,
     add_event,
     append_match_fact,
     clear_waiting,
     clear_waiting_for_match,
-    empty_notebook,
     expiry_from_now,
     get_pair_match,
     load_events,
     match_notebook,
-    open_match_count,
+    open_working_match,
     party_role,
-    should_reopen_closed_match,
     write_notebook,
 )
 
@@ -240,145 +233,6 @@ async def _close_match(
     )
 
 
-async def _clear_possible_pair_on_open(ctx: ToolContext, candidate: AgentRequest) -> None:
-    if ctx.request is None:
-        return
-    pending = possible_pair(ctx.request.details)
-    if pending and pending["other_request_id"] != candidate.id:
-        old = await ctx.db.get(AgentRequest, pending["other_request_id"])
-        if old is not None:
-            old_pending = possible_pair(old.details)
-            if old_pending and old_pending["other_request_id"] == ctx.request.id:
-                persist_possible_pair(old, None)
-    persist_possible_pair(ctx.request, None)
-    cand_pending = possible_pair(candidate.details)
-    if cand_pending and cand_pending["other_request_id"] == ctx.request.id:
-        persist_possible_pair(candidate, None)
-
-
-async def _notify_possible_pair_outcome(
-    ctx: ToolContext, other: AgentRequest, context: str
-) -> str:
-    """This person answered. Tell the original asker on their request lane. No match yet."""
-    persist_possible_pair(ctx.request, None)
-    other_pending = possible_pair(other.details)
-    if other_pending and other_pending["other_request_id"] == ctx.request.id:
-        persist_possible_pair(other, None)
-    brief = context.strip()
-    job = OutreachJob(
-        match_id=None,
-        to=None,
-        context=brief,
-        from_session_id=ctx.session.id,
-        to_request_id=other.id,
-    )
-    if any(
-        item.to_request_id == job.to_request_id and item.match_id is None
-        for item in ctx.queued_outreach
-    ):
-        return json_result(
-            ok=True,
-            candidate_id=other.id,
-            queued=True,
-            duplicate=True,
-            possible_pair=False,
-        )
-    ctx.queued_outreach.append(job)
-    logger.info(
-        "possible_pair outcome queued session=%s to_request=%s to_session=%s",
-        ctx.session.id,
-        other.id,
-        other.session_id,
-    )
-    return json_result(
-        ok=True,
-        candidate_id=other.id,
-        queued=True,
-        possible_pair=False,
-        outcome="Telling them separately. No match is open. This chat still needs your final reply.",
-    )
-
-
-async def _queue_possible_pair_question(
-    ctx: ToolContext, candidate_id: str, context: str
-) -> str:
-    if ctx.request is None:
-        return json_result(ok=False, error="No brief is saved for this session.")
-    if candidate_id == ctx.request.id:
-        return json_result(ok=False, error="Cannot ask a question on the same request.")
-    other = await ctx.db.get(AgentRequest, candidate_id)
-    if other is None:
-        return json_result(ok=False, error="Candidate request not found.")
-    if other.user_id == ctx.request.user_id:
-        return json_result(ok=False, error="A user cannot be matched with their own request.")
-    existing = possible_pair(ctx.request.details)
-    if (
-        existing
-        and existing["waiting_on_request_id"] == ctx.request.id
-        and existing["other_request_id"] == other.id
-    ):
-        return await _notify_possible_pair_outcome(ctx, other, context)
-    if existing and existing["other_request_id"] != other.id:
-        old = await ctx.db.get(AgentRequest, existing["other_request_id"])
-        if old is not None:
-            old_pending = possible_pair(old.details)
-            if old_pending and old_pending["other_request_id"] == ctx.request.id:
-                persist_possible_pair(old, None)
-    other_pending = possible_pair(other.details)
-    if other_pending and other_pending["other_request_id"] != ctx.request.id:
-        return json_result(
-            ok=False,
-            error="The other person already has a possible pair waiting.",
-        )
-    brief = context.strip()
-    self_entry = possible_pair_entry(
-        other_request_id=other.id,
-        question=brief,
-        waiting_on_request_id=other.id,
-        asked_by_request_id=ctx.request.id,
-    )
-    other_entry = possible_pair_entry(
-        other_request_id=ctx.request.id,
-        question=brief,
-        waiting_on_request_id=other.id,
-        asked_by_request_id=ctx.request.id,
-    )
-    persist_possible_pair(ctx.request, self_entry)
-    persist_possible_pair(other, other_entry)
-    job = OutreachJob(
-        match_id=None,
-        to=None,
-        context=brief,
-        from_session_id=ctx.session.id,
-        to_request_id=other.id,
-    )
-    if any(
-        item.to_request_id == job.to_request_id and item.match_id is None
-        for item in ctx.queued_outreach
-    ):
-        return json_result(
-            ok=True,
-            candidate_id=other.id,
-            queued=True,
-            duplicate=True,
-            possible_pair=True,
-        )
-    ctx.queued_outreach.append(job)
-    logger.info(
-        "possible_pair question queued session=%s candidate_id=%s to_session=%s",
-        ctx.session.id,
-        other.id,
-        other.session_id,
-    )
-    return json_result(
-        ok=True,
-        candidate_id=other.id,
-        queued=True,
-        possible_pair=True,
-        outcome="Asking them separately. No match is open yet. This chat still needs your final reply.",
-    )
-
-
 def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
     async def open_match(args: OpenMatchArgs) -> str:
         if ctx.request is None:
@@ -397,65 +251,26 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             return json_result(ok=False, error="A user cannot be matched with their own request.")
 
         existing = await get_pair_match(ctx.db, ctx.request.id, candidate.id)
-        reused = False
-        if existing is not None:
-            if existing.status in {MATCH_ACCEPTED, MATCH_CONNECTED}:
-                return json_result(ok=False, error="This pair already completed.")
-            if existing.status == MATCH_CLOSED and not should_reopen_closed_match(
-                existing, ctx.request, candidate
-            ):
+        if existing is None or existing.status != MATCH_OPEN:
+            suggestion = await suggestion_for_pair(ctx.db, ctx.request.id, candidate.id)
+            if suggestion is None or suggestion.status != SUGGESTION_INTERESTED:
                 return json_result(
                     ok=False,
-                    error="This pair was closed and is not eligible to reopen yet.",
+                    error="This person has not marked Interested on that candidate.",
                 )
-            match = existing
-            reused = existing.status == MATCH_OPEN
-            if not reused:
-                cap = settings.MAX_OPEN_MATCHES_PER_REQUEST
-                if await open_match_count(ctx.db, ctx.request.id) >= cap:
-                    return json_result(ok=False, error="Open-match limit reached.")
-                if await open_match_count(ctx.db, candidate.id) >= cap:
-                    return json_result(
-                        ok=False,
-                        error="The other person already has too many open matches.",
-                    )
-        else:
-            cap = settings.MAX_OPEN_MATCHES_PER_REQUEST
-            if await open_match_count(ctx.db, ctx.request.id) >= cap:
-                return json_result(
-                    ok=False,
-                    error="Open-match limit reached.",
-                )
-            if await open_match_count(ctx.db, candidate.id) >= cap:
-                return json_result(
-                    ok=False,
-                    error="The other person already has too many open matches.",
-                )
-            match = AgentMatch(
-                source_request_id=ctx.request.id,
-                candidate_request_id=candidate.id,
-            )
-            ctx.db.add(match)
-            await ctx.db.flush()
-
-        match.status = MATCH_OPEN
-        match.close_reason = None
-        match.last_activity_at = datetime.now(UTC)
-        match.expires_at = expiry_from_now()
-        if not getattr(match, "notebook", None):
-            write_notebook(match, empty_notebook())
-        if not reused:
-            await add_event(
+        try:
+            match, reused = await open_working_match(
                 ctx.db,
-                match_id=match.id,
-                event_type="match_opened",
+                source=ctx.request,
+                candidate=candidate,
                 session_id=ctx.session.id,
                 user_id=ctx.profile.id,
-                payload={"candidate_id": candidate.id},
             )
+        except OpenMatchError as exc:
+            return json_result(ok=False, error=str(exc))
+        if not reused:
             ctx.opened_match_ids.append(match.id)
         adopt_focus_if_idle(ctx, match.id)
-        await _clear_possible_pair_on_open(ctx, candidate)
         logger.info(
             "open_match session=%s match_id=%s candidate_id=%s reused=%s",
             ctx.session.id,
@@ -480,15 +295,9 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             )
         has_match = bool((args.match_id or "").strip() or focused_match_id(ctx))
         if not has_match:
-            candidate_id = (args.candidate_id or "").strip()
-            pending = possible_pair(ctx.request.details) if ctx.request is not None else None
-            if not candidate_id and pending is not None:
-                candidate_id = pending["other_request_id"]
-            if candidate_id:
-                return await _queue_possible_pair_question(ctx, candidate_id, args.context)
             return json_result(
                 ok=False,
-                error="Pass candidate_id to ask a screened person before a match is open.",
+                error="Open a match first. The other person is not contacted until this person marks Interested.",
             )
         match, current, other, _source = await owned_match(ctx, args.match_id)
         if match.status not in {MATCH_OPEN, MATCH_ACCEPTED}:

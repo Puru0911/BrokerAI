@@ -16,6 +16,7 @@ from app.db.models.broker import (
     AgentPushSubscription,
     AgentRequest,
     AgentSession,
+    AgentSuggestedMatch,
 )
 from app.db.models.user_profile import UserProfile
 
@@ -37,5 +38,6 @@ __all__ = [
     "AgentPushSubscription",
     "AgentRequest",
     "AgentSession",
+    "AgentSuggestedMatch",
     "UserProfile",
 ]

@@ -7,6 +7,7 @@ import {
   parseAttachmentRequest,
   parseAttachmentShare
 } from "@/components/chat/attachment-cards"
+import { parseCandidateDeck } from "@/components/chat/candidate-card"
 import { parseConnectOffer, parseContactCard } from "@/components/chat/contact-card"
 import { EmptyState } from "@/components/chat/empty-state"
 import { MessageBubble, type MessageActions } from "@/components/chat/message-bubble"
@@ -71,8 +72,10 @@ export function MessageList({
         ) : (
           <>
             {clusterShareMessages(
-              placeCardsAfterAssistantText(
-                messages.filter((message) => !parseConnectOffer(message.content))
+              clusterCandidateMessages(
+                placeCardsAfterAssistantText(
+                  messages.filter((message) => !parseConnectOffer(message.content))
+                )
               )
             ).map((group) => (
               <MessageBubble
@@ -100,7 +103,8 @@ function isStructuredCard(message: BrokerMessage): boolean {
     parseAttachmentRequest(message.content) ||
       parseAttachmentPermission(message.content) ||
       parseAttachmentShare(message.content) ||
-      parseContactCard(message.content)
+      parseContactCard(message.content) ||
+      parseCandidateDeck(message.content)
   )
 }
 
@@ -125,6 +129,44 @@ function placeCardsAfterAssistantText(messages: BrokerMessage[]): BrokerMessage[
     )
   }
   return ordered
+}
+
+function isCandidateMessage(message: BrokerMessage): boolean {
+  return message.role === "assistant" && Boolean(parseCandidateDeck(message.content))
+}
+
+function clusterCandidateMessages(messages: BrokerMessage[]): BrokerMessage[] {
+  const result: BrokerMessage[] = []
+  let index = 0
+  while (index < messages.length) {
+    if (!isCandidateMessage(messages[index])) {
+      result.push(messages[index])
+      index += 1
+      continue
+    }
+    const run: BrokerMessage[] = []
+    while (index < messages.length && isCandidateMessage(messages[index])) {
+      run.push(messages[index])
+      index += 1
+    }
+    result.push(mergeCandidateGroup(run))
+  }
+  return result
+}
+
+function mergeCandidateGroup(group: BrokerMessage[]): BrokerMessage {
+  if (group.length === 1) return group[0]
+  const candidates = group.flatMap(
+    (message) => parseCandidateDeck(message.content)?.candidates || []
+  )
+  return {
+    ...group[0],
+    content: JSON.stringify({
+      kind: "broker_candidate_cards",
+      version: 1,
+      candidates
+    })
+  }
 }
 
 function clusterShareMessages(messages: BrokerMessage[]): BrokerMessage[][] {

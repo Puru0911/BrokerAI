@@ -279,6 +279,59 @@ async def load_attachment_bytes(attachment: AgentAttachment) -> tuple[bytes, str
     return await get_attachment_store().fetch(attachment.storage_key)
 
 
+def blur_storage_key(storage_key: str) -> str:
+    parent = str(Path(storage_key).parent).replace("\\", "/")
+    if parent in {"", "."}:
+        return "blur.jpg"
+    return f"{parent}/blur.jpg"
+
+
+def placeholder_blur_jpeg() -> bytes:
+    from io import BytesIO
+
+    from PIL import Image
+
+    image = Image.new("RGB", (48, 48), (36, 36, 36))
+    buffer = BytesIO()
+    image.save(buffer, format="JPEG", quality=35)
+    return buffer.getvalue()
+
+
+def blur_image_bytes(data: bytes) -> bytes:
+    from io import BytesIO
+
+    from PIL import Image, ImageFilter
+
+    with Image.open(BytesIO(data)) as image:
+        rgb = image.convert("RGB")
+        rgb.thumbnail((64, 64))
+        blurred = rgb.filter(ImageFilter.GaussianBlur(radius=8))
+        buffer = BytesIO()
+        blurred.save(buffer, format="JPEG", quality=40)
+        return buffer.getvalue()
+
+
+async def blurred_attachment_bytes(attachment: AgentAttachment) -> tuple[bytes, str]:
+    if not attachment.storage_key:
+        return placeholder_blur_jpeg(), "image/jpeg"
+    store = get_attachment_store()
+    key = blur_storage_key(attachment.storage_key)
+    try:
+        return await store.fetch(key)
+    except FileNotFoundError:
+        pass
+    except StorageNotConfiguredError:
+        return placeholder_blur_jpeg(), "image/jpeg"
+    try:
+        original, _content_type = await load_attachment_bytes(attachment)
+        blurred = blur_image_bytes(original)
+        await store.put(key, blurred, "image/jpeg")
+        return blurred, "image/jpeg"
+    except Exception:
+        logger.exception("blur derivative failed attachment_id=%s", attachment.id)
+        return placeholder_blur_jpeg(), "image/jpeg"
+
+
 async def count_session_attachments(db: AsyncSession, session_id: str) -> int:
     result = await db.execute(
         select(AgentAttachment).where(

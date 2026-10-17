@@ -98,6 +98,23 @@ async def init_db() -> None:
                     """
                 )
             )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_suggested_matches (
+                        id VARCHAR(36) PRIMARY KEY,
+                        request_id VARCHAR(36) NOT NULL REFERENCES agent_requests(id) ON DELETE CASCADE,
+                        candidate_request_id VARCHAR(36) NOT NULL REFERENCES agent_requests(id) ON DELETE CASCADE,
+                        status VARCHAR(24) NOT NULL DEFAULT 'ready',
+                        evaluation JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        card_message_id VARCHAR(36) REFERENCES agent_messages(id) ON DELETE SET NULL,
+                        created_at TIMESTAMPTZ DEFAULT now(),
+                        updated_at TIMESTAMPTZ DEFAULT now(),
+                        CONSTRAINT uq_agent_suggested_matches_pair UNIQUE (request_id, candidate_request_id)
+                    )
+                    """
+                )
+            )
         logger.info("Database tables ready (local create_all)")
         return
 

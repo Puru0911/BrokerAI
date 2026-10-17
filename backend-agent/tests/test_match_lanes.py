@@ -277,9 +277,13 @@ async def test_context_packet_marks_request_vs_match_lane(
     async def two_open(*_args, **_kwargs):
         return 2
 
+    async def no_suggestions(*_args, **_kwargs):
+        return []
+
     monkeypatch.setattr("app.agents.context.list_matches_for_request", no_matches)
     monkeypatch.setattr("app.agents.context.context_attachments", no_attachments)
     monkeypatch.setattr("app.agents.context.open_match_count", two_open)
+    monkeypatch.setattr("app.agents.context.list_suggestions", no_suggestions)
 
     ctx = ToolContext(
         db=AsyncMock(),
@@ -296,7 +300,8 @@ async def test_context_packet_marks_request_vs_match_lane(
     assert "other_matches" not in packet
     assert packet["open_matches"] == []
     assert packet["open_match_count"] == 2
-    assert packet["possible_pair"] is None
+    assert packet["suggested_matches"] == []
+    assert packet["pending_questions"] == []
     assert packet["recent_events"] == []
 
     ctx.focus_match_id = "match-1"

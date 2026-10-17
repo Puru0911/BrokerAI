@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import UTC, datetime, timedelta
 from typing import Any, Literal
 
-from sqlalchemy import or_, select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm.attributes import flag_modified
 
@@ -189,11 +189,74 @@ async def get_pair_match(
 ) -> AgentMatch | None:
     result = await db.execute(
         select(AgentMatch).where(
-            AgentMatch.source_request_id == source_request_id,
-            AgentMatch.candidate_request_id == candidate_request_id,
+            or_(
+                and_(
+                    AgentMatch.source_request_id == source_request_id,
+                    AgentMatch.candidate_request_id == candidate_request_id,
+                ),
+                and_(
+                    AgentMatch.source_request_id == candidate_request_id,
+                    AgentMatch.candidate_request_id == source_request_id,
+                ),
+            )
         )
     )
-    return result.scalar_one_or_none()
+    return result.scalars().first()
+
+
+class OpenMatchError(ValueError):
+    """Raised when a working match cannot be opened."""
+
+
+async def open_working_match(
+    db: AsyncSession,
+    *,
+    source: AgentRequest,
+    candidate: AgentRequest,
+    session_id: str,
+    user_id: str,
+) -> tuple[AgentMatch, bool]:
+    """Create or reopen an OPEN match. Returns (match, reused)."""
+    if source.id == candidate.id:
+        raise OpenMatchError("Cannot open a match against the same request.")
+    if source.user_id == candidate.user_id:
+        raise OpenMatchError("A user cannot be matched with their own request.")
+
+    existing = await get_pair_match(db, source.id, candidate.id)
+    reused = False
+    if existing is not None:
+        if existing.status in {MATCH_ACCEPTED, MATCH_CONNECTED}:
+            raise OpenMatchError("This pair already completed.")
+        if existing.status == MATCH_CLOSED and not should_reopen_closed_match(
+            existing, source, candidate
+        ):
+            raise OpenMatchError("This pair was closed and is not eligible to reopen yet.")
+        match = existing
+        reused = existing.status == MATCH_OPEN
+    else:
+        match = AgentMatch(
+            source_request_id=source.id,
+            candidate_request_id=candidate.id,
+        )
+        db.add(match)
+        await db.flush()
+
+    match.status = MATCH_OPEN
+    match.close_reason = None
+    match.last_activity_at = datetime.now(UTC)
+    match.expires_at = expiry_from_now()
+    if not getattr(match, "notebook", None):
+        write_notebook(match, empty_notebook())
+    if not reused:
+        await add_event(
+            db,
+            match_id=match.id,
+            event_type="match_opened",
+            session_id=session_id,
+            user_id=user_id,
+            payload={"candidate_id": candidate.id},
+        )
+    return match, reused
 
 
 async def open_match_count(db: AsyncSession, request_id: str) -> int:
@@ -214,7 +277,7 @@ async def list_matches_for_request(
     request_id: str,
     *,
     statuses: set[str] | None = None,
-    limit: int = 8,
+    limit: int = 40,
 ) -> list[AgentMatch]:
     stmt = select(AgentMatch).where(
         or_(

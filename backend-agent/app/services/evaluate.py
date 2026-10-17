@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
@@ -28,9 +29,28 @@ class PairEvaluation(BaseModel):
     negotiation_room: bool = False
     recommended_action: RecommendedAction
     clarifying_question: str = ""
+    clarifying_questions: list[str] = Field(default_factory=list)
     next_questions: list[str] = Field(default_factory=list)
     rationale: str = ""
     candidate_id: str = ""
+
+
+def clarifying_questions_from(evaluation: PairEvaluation | dict[str, Any] | None) -> list[str]:
+    """Questions this person can answer now, in screener order, without duplicates."""
+    if evaluation is None:
+        return []
+    if isinstance(evaluation, PairEvaluation):
+        first = evaluation.clarifying_question
+        rest = evaluation.clarifying_questions
+    else:
+        first = evaluation.get("clarifying_question")
+        rest = evaluation.get("clarifying_questions") or []
+    items: list[str] = []
+    for raw in [first, *rest]:
+        text = str(raw or "").strip()
+        if text and text not in items:
+            items.append(text)
+    return items
 
 
 async def evaluate_pair(
@@ -57,3 +77,26 @@ async def evaluate_pair(
     )
     evaluation.candidate_id = candidate_request.id
     return evaluation
+
+
+async def evaluate_pairs(
+    source_request: AgentRequest,
+    candidates: list[AgentRequest],
+    *,
+    prior_events_by_id: dict[str, list[dict[str, Any]]] | None = None,
+) -> list[PairEvaluation]:
+    prior = prior_events_by_id or {}
+    if not candidates:
+        return []
+    return list(
+        await asyncio.gather(
+            *[
+                evaluate_pair(
+                    source_request,
+                    candidate,
+                    prior_events=prior.get(candidate.id) or [],
+                )
+                for candidate in candidates
+            ]
+        )
+    )

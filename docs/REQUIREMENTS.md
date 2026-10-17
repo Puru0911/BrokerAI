@@ -63,3 +63,41 @@ Each entry is the product rule, the broken flow, what code changed, and the fix.
 - Tests: `tests/test_match_lanes.py` (`test_reply_lane_stays_on_request_when_open_match_adopts_focus`), `tests/test_agent_runtime.py` (`test_open_match_from_request_lane_leaves_an_update_then_starts_match`).
 
 **Fix:** Never leave the request lane silent after a match is opened from it. Keep the match-lane kickoff. Do not auto-switch the tab.
+
+---
+
+## REQ-004 — Screened candidates are one-sided Interested/Skip cards
+
+**Date:** 2026-10-16
+
+**Requirement:** Screening stays on Your request. `evaluate_pair` screens up to `MAX_PAIR_PER_REQUEST` (default 3) candidates and stores them on this request only. Ready candidates appear as Interested/Skip cards (`present_candidates`); public photos show clearly and personal photos are blurred with Request photo (which counts as Interested). A two-sided match lane opens only after Interested. Skip excludes that candidate from later fills for this request. Unacted cards can return with new ones on the next screening turn. The counterpart never sees this evaluation or those cards. Clarifying questions for this person stay here; after they answer, stored suggestions are re-evaluated. The other person is contacted only after Interested, on the new match lane.
+
+**What was wrong:** `evaluate_pair` returned one pair. A possible pair was written onto both briefs (`details.possible_pair`) and `message_party(candidate_id)` reached the counterpart before this person opted in. `open_match` created a lane for both parties immediately and `MAX_OPEN_MATCHES_PER_REQUEST` capped live OPEN matches.
+
+**Flow change:**
+
+1. Search, then `evaluate_pair` with up to three `candidate_ids`.
+2. Store `agent_suggested_matches` on the source request. Ask this person any `ask_clarifying_question` here, then re-evaluate stored ids.
+3. `present_candidates` writes request-lane cards. No outreach.
+4. Interested or Request photo opens the match, stays on Your request, and kicks off the pair on the new tab. Skip removes that candidate.
+5. `open_match` and `message_party` require that Interested step.
+
+**Code change:** `backend-agent/app/services/suggestions.py`, Alembic `0006_suggested_matches`, batch `evaluate_pairs`, `present_candidates` tool, Interested/Skip API, Pillow blur derivatives, gated `open_match` / `message_party`, `schedule_match_kickoff`, frontend `candidate-card.tsx`. Cap renamed to `MAX_PAIR_PER_REQUEST`. `possible_pair` store and pre-open outreach removed.
+
+**Fix:** This person chooses which screened people become matches. The other person is not shown the same evaluation.
+
+---
+
+## REQ-005 — Present the screening set together after clarifying answers
+
+**Date:** 2026-10-16
+
+**Requirement:** Up to three screened candidates are one set. Status is `strong_match` when no question is needed (`pending_clarify` is none) or `pending_clarify` when this person still owes a fact. A pair is not limited to one clarifying question: the pair screener decides the missing facts and the questions, then the packet lists every pending question from every pair. The broker asks those questions on Your request. If any of the set needs a question, do not show cards yet — including the strong matches in that set. After they answer, re-evaluate the stored pairs and present every remaining `strong_match` together in one horizontal row of Interested/Skip cards.
+
+**What was wrong:** `ready` cards could appear immediately while others in the same screening still needed a question. Each card was its own stacked bubble. Screening also kept one `clarifying_question` string per pair and did not hand the broker the full set.
+
+**Flow change:** Hold the whole set while any row is `pending_clarify`. Collect `clarifying_questions` from every pending pair into `pending_questions`. The broker asks them. `present_candidates` writes one `broker_candidate_cards` message for every `strong_match` together.
+
+**Code change:** `backend-agent/app/services/suggestions.py` (`strong_match`, batch hold, one deck message, `pending_questions`). Pair evaluator `clarifying_questions`. Packet and `evaluate_pair` result. Prompts and `present_candidates` tool copy. Frontend `CandidateDeck` in `candidate-card.tsx`.
+
+**Fix:** The three (or fewer) people from one screening appear at once, after any clarifying answers. Clarifying still works as before: the screener decides gaps and questions, the broker asks the combined list.

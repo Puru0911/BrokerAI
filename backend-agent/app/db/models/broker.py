@@ -140,6 +140,45 @@ class AgentMatch(Base):
     )
 
 
+class AgentSuggestedMatch(Base):
+    __tablename__ = "agent_suggested_matches"
+    __table_args__ = (
+        UniqueConstraint(
+            "request_id",
+            "candidate_request_id",
+            name="uq_agent_suggested_matches_pair",
+        ),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_requests.id", ondelete="CASCADE"),
+        index=True,
+    )
+    candidate_request_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_requests.id", ondelete="CASCADE"),
+        index=True,
+    )
+    status: Mapped[str] = mapped_column(String(24), default="strong_match", index=True)
+    evaluation: Mapped[dict] = mapped_column(JSONB, default=dict)
+    card_message_id: Mapped[str | None] = mapped_column(
+        ForeignKey("agent_messages.id", ondelete="SET NULL"),
+        nullable=True,
+        index=True,
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+        onupdate=func.now(),
+    )
+
+
 class AgentEvent(Base):
     __tablename__ = "agent_events"
 

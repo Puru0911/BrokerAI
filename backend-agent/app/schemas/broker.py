@@ -201,6 +201,29 @@ class BrokerIntroductionAction(BaseModel):
     action: Literal["accept", "dismiss"]
 
 
+class BrokerSuggestionAction(BaseModel):
+    action: Literal["interested", "skip"]
+    attachment_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=36,
+        description="Personal photo on the card whose clear copy this person is requesting.",
+    )
+
+
+class BrokerSuggestionRead(BaseModel):
+    id: str
+    candidate_id: str
+    status: str
+    verdict: str = ""
+    recommended_action: str = ""
+    pending_clarify: str | None = None
+    clarifying_question: str = ""
+    pending_questions: list[str] = Field(default_factory=list)
+    missing_info: list[str] = Field(default_factory=list)
+    card_message_id: str | None = None
+
+
 class BrokerSessionDetail(BaseModel):
     session: BrokerSessionRead
     messages: list[BrokerMessageRead]
@@ -210,6 +233,7 @@ class BrokerSessionDetail(BaseModel):
     connect_offer: BrokerConnectOfferRead | None = None
     matches: list[BrokerMatchLaneRead] = Field(default_factory=list)
     connect_offers: list[BrokerConnectOfferRead] = Field(default_factory=list)
+    suggestions: list[BrokerSuggestionRead] = Field(default_factory=list)
 
 
 class BrokerRequestMatch(BaseModel):
