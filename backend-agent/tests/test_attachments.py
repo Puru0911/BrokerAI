@@ -4,7 +4,9 @@ import json
 
 import pytest
 
-from app.db.models import AgentAttachment
+from unittest.mock import AsyncMock
+
+from app.db.models import AgentAttachment, AgentAttachmentRequest
 from app.services.attachments import (
     ATTACHMENT_PERMISSION_KIND,
     ATTACHMENT_REQUEST_KIND,
@@ -12,9 +14,13 @@ from app.services.attachments import (
     AttachmentError,
     _share_card_item,
     apply_permission_grant_status,
+    blur_image_bytes,
+    blur_storage_key,
     can_share_directly,
+    classify_attachment,
     counterpart_file_inventory,
     extract_urls,
+    fulfill_upload_request,
     gallery_title,
     generic_file_label,
     is_device_filename,
@@ -22,6 +28,7 @@ from app.services.attachments import (
     normalize_content_type,
     owner_and_recipient_requests,
     parse_structured_card,
+    placeholder_blur_jpeg,
     sanitize_filename,
     stored_basename,
     upload_notice,
@@ -65,6 +72,8 @@ def test_counterpart_file_inventory_lists_public_and_counts_the_rest() -> None:
                 "label": "Desk photo",
                 "filename": "IMG_0042.JPG",
                 "content_type": "image/jpeg",
+                "caption": "these are the room photos",
+                "description": "Listing photos of the Baner PG",
                 "url": "https://secret.example/file",
             },
             {
@@ -101,8 +110,11 @@ def test_counterpart_file_inventory_lists_public_and_counts_the_rest() -> None:
     assert inventory["public"][1]["shared"] is True
     assert inventory["public"][0]["purpose"] == "listing_photos"
     assert inventory["public"][0]["label"] == "Desk photo"
+    assert inventory["public"][0]["description"] == "Listing photos of the Baner PG"
+    assert "caption" not in inventory["public"][0]
     assert "filename" not in inventory["public"][0]
     assert "url" not in inventory["public"][0]
+    assert "these are the room photos" not in str(inventory)
     assert "Passport" not in str(inventory)
     assert "passport.jpg" not in str(inventory)
 
@@ -273,6 +285,23 @@ def test_gallery_title_ignores_device_filenames() -> None:
     assert "IMG_618" not in gallery_title(photos)
 
 
+def test_gallery_title_uses_shared_description_when_labels_are_generic() -> None:
+    photos = [
+        AgentAttachment(
+            id=f"a{index}",
+            user_id="u1",
+            session_id="s1",
+            kind="file",
+            label="Photo",
+            content_type="image/jpeg",
+            description="Room photos of the Baner PG",
+            status="ready",
+        )
+        for index in (1, 2)
+    ]
+    assert gallery_title(photos) == "Room photos of the Baner PG"
+
+
 def test_share_card_item_omits_original_filename() -> None:
     item = AgentAttachment(
         id="a1",
@@ -284,13 +313,75 @@ def test_share_card_item_omits_original_filename() -> None:
         content_type="image/jpeg",
         purpose="listing_photos",
         share_class="public",
+        caption="these are the room photos",
+        description="Listing photos of the Baner PG",
         status="ready",
     )
     payload = _share_card_item(item)
     assert "original_filename" not in payload
     assert "filename" not in payload
+    assert "caption" not in payload
     assert payload["label"] == "Photo"
+    assert payload["description"] == "Listing photos of the Baner PG"
     assert payload["id"] == "a1"
+
+
+@pytest.mark.asyncio
+async def test_classify_attachment_writes_description_and_keeps_caption() -> None:
+    db = AsyncMock()
+    item = AgentAttachment(
+        id="a1",
+        user_id="u1",
+        session_id="s1",
+        kind="file",
+        content_type="image/jpeg",
+        caption="these are the room photos",
+        description=None,
+        share_class="pending",
+        status="ready",
+    )
+    updated = await classify_attachment(
+        db,
+        item,
+        share_class="public",
+        label="Baner PG",
+        purpose="listing_photos",
+        description="Listing photos of the Baner PG sent after we asked for rooms.",
+    )
+    assert updated.caption == "these are the room photos"
+    assert updated.description == (
+        "Listing photos of the Baner PG sent after we asked for rooms."
+    )
+    assert updated.share_class == "public"
+    assert updated.purpose == "listing_photos"
+    db.flush.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_fulfill_upload_request_does_not_copy_hint_into_description() -> None:
+    prompt = AgentAttachmentRequest(
+        id="r1",
+        session_id="s1",
+        user_id="u1",
+        purpose="resume",
+        hint="A recent resume helps.",
+        status="pending",
+    )
+    item = AgentAttachment(
+        id="a1",
+        user_id="u1",
+        session_id="s1",
+        kind="file",
+        caption=None,
+        description=None,
+        status="ready",
+    )
+    db = AsyncMock()
+    db.get = AsyncMock(return_value=prompt)
+    await fulfill_upload_request(db, "r1", item)
+    assert item.purpose == "resume"
+    assert item.description is None
+    assert item.caption is None
 
 
 async def test_memory_store_roundtrip() -> None:
@@ -304,3 +395,23 @@ async def test_memory_store_roundtrip() -> None:
     await store.delete("u/s/a/file.pdf")
     with pytest.raises(FileNotFoundError):
         await store.fetch("u/s/a/file.pdf")
+
+
+def test_blur_storage_key_sits_next_to_the_original() -> None:
+    assert blur_storage_key("user/session/att/file.jpg") == "user/session/att/blur.jpg"
+    assert blur_storage_key("file.jpg") == "blur.jpg"
+
+
+def test_blur_image_bytes_returns_jpeg_smaller_than_source() -> None:
+    from io import BytesIO
+
+    from PIL import Image
+
+    buffer = BytesIO()
+    Image.new("RGB", (240, 240), (180, 40, 40)).save(buffer, format="JPEG", quality=90)
+    original = buffer.getvalue()
+    blurred = blur_image_bytes(original)
+    assert blurred != original
+    assert blurred[:2] == b"\xff\xd8"
+    placeholder = placeholder_blur_jpeg()
+    assert placeholder[:2] == b"\xff\xd8"

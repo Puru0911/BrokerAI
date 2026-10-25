@@ -19,11 +19,15 @@ from app.core.config import settings
 # JSON tool_calls. ChatOpenAI does not send that Groq field.
 _GROQ_REASONING_MARKERS = ("qwen/", "qwen3", "gpt-oss", "minimax")
 
-# Broker chat sampling. Stay inside 0.3–0.5 / 0.8–0.9 so multilingual
-# Qwen/OpenRouter turns follow the user's language more reliably than the
-# thinking-mode 1.0 / 0.95 recipe.
-_BROKER_TEMPERATURE = 0.4
-_BROKER_TOP_P = 0.85
+# Broker output sampling. OpenRouter has no separate thinking temperature;
+# thinking strength is OPENROUTER_REASONING_EFFORT.
+_BROKER_TEMPERATURE = 0.3
+_BROKER_TOP_P = 0.8
+_OPENROUTER_PROVIDER = {
+    "quantizations": ["fp8", "mxfp8", "bf16", "fp16", "fp32"],
+    "require_parameters": True,
+    "allow_fallbacks": True,
+}
 
 
 @dataclass(frozen=True)
@@ -104,7 +108,7 @@ def openrouter_reasoning_config() -> dict[str, Any] | None:
     """OpenRouter reasoning object, or None when the toggle is off."""
     if not settings.OPENROUTER_REASONING_ENABLED:
         return None
-    effort = (settings.OPENROUTER_REASONING_EFFORT or "medium").strip().lower()
+    effort = (settings.OPENROUTER_REASONING_EFFORT or "low").strip().lower()
     return {
         "enabled": True,
         "effort": effort,
@@ -213,12 +217,13 @@ def _build_openrouter_chat_model(
         "max_retries": 2,
         "app_url": settings.public_app_url,
         "app_title": settings.APP_NAME,
+        "top_p": _BROKER_TOP_P,
+        "openrouter_provider": dict(_OPENROUTER_PROVIDER),
     }
     if reasoning is not None:
         # Full OpenRouter object (enabled/effort/exclude). The SDK currently
         # serializes effort/summary; omit this dict entirely when the toggle is off.
         kwargs["reasoning"] = reasoning
-        kwargs["top_p"] = _BROKER_TOP_P
     return ChatOpenRouter(**kwargs)
 
 

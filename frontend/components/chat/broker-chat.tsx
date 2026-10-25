@@ -28,6 +28,7 @@ import {
   listBrokerSessions,
   markBrokerMatchRead,
   respondToIntroduction,
+  respondToSuggestion,
   sendBrokerMessage,
   sendConnectionMessage,
   uploadBrokerAttachment,
@@ -106,6 +107,7 @@ export function BrokerChat({
   const [grantingAttachmentId, setGrantingAttachmentId] = useState<
     string | null
   >(null)
+  const [suggestingId, setSuggestingId] = useState<string | null>(null)
   const [uploadingRequestId, setUploadingRequestId] = useState<string | null>(
     null
   )
@@ -1052,6 +1054,36 @@ export function BrokerChat({
     }
   }
 
+  async function handleSuggestion(
+    suggestionId: string,
+    action: "interested" | "skip",
+    attachmentId?: string
+  ) {
+    if (!accessToken || !activeSessionId) return
+    const sessionId = activeSessionId
+    setError(null)
+    setSuggestingId(suggestionId)
+    try {
+      const detail = await respondToSuggestion(
+        accessToken,
+        sessionId,
+        suggestionId,
+        action,
+        attachmentId
+      )
+      if (activeSessionIdRef.current !== sessionId) return
+      applySessionDetail(detail)
+    } catch (caughtError) {
+      setError(
+        caughtError instanceof Error
+          ? caughtError.message
+          : "Could not update that match."
+      )
+    } finally {
+      setSuggestingId(null)
+    }
+  }
+
   async function handleDeleteSession(sessionId: string) {
     if (!accessToken) return
 
@@ -1302,7 +1334,10 @@ export function BrokerChat({
                 void handleRequestUpload(requestId, files),
               grantingAttachmentId,
               onGrant: (attachmentId, matchId, granted) =>
-                void handleGrant(attachmentId, matchId, granted)
+                void handleGrant(attachmentId, matchId, granted),
+              suggestingId,
+              onSuggestion: (suggestionId, action, attachmentId) =>
+                void handleSuggestion(suggestionId, action, attachmentId)
             }}
             endRef={messageEndRef}
           />

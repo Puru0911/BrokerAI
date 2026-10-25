@@ -37,6 +37,16 @@ body {
   height: 100%;
 }
 
+html {
+  scroll-behavior: smooth;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  html {
+    scroll-behavior: auto;
+  }
+}
+
 body {
   background: rgb(var(--canvas));
   color: rgb(var(--ink));
@@ -87,4 +97,24 @@ body {
 
 .thinking-dot:nth-child(3) {
   animation-delay: 0.3s;
+}
+
+@keyframes landing-float {
+  0%,
+  100% {
+    transform: translateY(0);
+  }
+  50% {
+    transform: translateY(-6px);
+  }
+}
+
+.landing-float {
+  animation: landing-float 7s ease-in-out infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .landing-float {
+    animation: none;
+  }
 }

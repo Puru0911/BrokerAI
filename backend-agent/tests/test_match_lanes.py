@@ -11,11 +11,10 @@ from app.agents.context import (
     focused_match_id,
     load_session_history,
     reply_lane_id,
-    resolve_session_role,
 )
 from app.agents.tools._common import adopt_focus_if_idle, resolve_match_id
 from app.agents.tools.match_tools import MessagePartyArgs
-from app.db.models import AgentMatch, AgentMessage, AgentRequest, AgentSession
+from app.db.models import AgentMatch, AgentMessage, AgentRequest, AgentSession, AgentSuggestedMatch
 from app.services.match_lanes import (
     MatchLaneError,
     _unread_counts,
@@ -24,6 +23,7 @@ from app.services.match_lanes import (
     require_request_match,
     roster_entry,
 )
+from app.services.suggestions import SUGGESTION_PENDING_CLARIFY, SUGGESTION_STRONG_MATCH
 from app.services.workflow import MATCH_ACCEPTED, MATCH_OPEN
 
 
@@ -97,30 +97,6 @@ def test_focus_prefers_explicit_lane_over_waiting_pointer() -> None:
         trigger_match_id=None,
     )
     assert focused_match_id(ctx) == "match-new"
-
-
-@pytest.mark.asyncio
-async def test_session_role_follows_focused_match_not_waiting_pointer() -> None:
-    match = AgentMatch(
-        id="match-1",
-        source_request_id="other",
-        candidate_request_id="req-1",
-        status=MATCH_OPEN,
-    )
-    db = AsyncMock()
-    db.get = AsyncMock(return_value=match)
-    ctx = ToolContext(
-        db=db,
-        profile=SimpleNamespace(id="u1"),
-        session=AgentSession(id="s1", user_id="u1"),
-        request=_request(id="req-1"),
-        user_message=None,
-        trigger="user_message",
-        focus_match_id="match-1",
-    )
-    assert await resolve_session_role(ctx) == "counterparty"
-    ctx.focus_match_id = None
-    assert await resolve_session_role(ctx) == "source"
 
 
 def test_lane_label_hides_identity_until_accept() -> None:
@@ -277,9 +253,13 @@ async def test_context_packet_marks_request_vs_match_lane(
     async def two_open(*_args, **_kwargs):
         return 2
 
+    async def no_suggestions(*_args, **_kwargs):
+        return []
+
     monkeypatch.setattr("app.agents.context.list_matches_for_request", no_matches)
     monkeypatch.setattr("app.agents.context.context_attachments", no_attachments)
     monkeypatch.setattr("app.agents.context.open_match_count", two_open)
+    monkeypatch.setattr("app.agents.context.list_suggestions", no_suggestions)
 
     ctx = ToolContext(
         db=AsyncMock(),
@@ -291,15 +271,74 @@ async def test_context_packet_marks_request_vs_match_lane(
         focus_match_id=None,
     )
     packet = await build_context_packet(ctx)
+    assert "SESSION_ROLE" not in packet
     assert packet["LANE"] == "request"
     assert packet["focus_match_id"] is None
+    assert packet["view_filters"] == []
     assert "other_matches" not in packet
     assert packet["open_matches"] == []
     assert packet["open_match_count"] == 2
-    assert packet["possible_pair"] is None
+    assert packet["suggested_matches"] == []
+    assert packet["pending_questions"] == []
     assert packet["recent_events"] == []
 
     ctx.focus_match_id = "match-1"
     packet = await build_context_packet(ctx)
     assert packet["LANE"] == "match"
     assert packet["focus_match_id"] == "match-1"
+    assert packet["view_filters"] == []
+
+
+@pytest.mark.asyncio
+async def test_packet_retracts_pending_questions_when_presenting_cards(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    strong = AgentSuggestedMatch(
+        id="sug-1",
+        request_id="req-1",
+        candidate_request_id="req-b",
+        status=SUGGESTION_STRONG_MATCH,
+        evaluation={"verdict": "strong_match"},
+    )
+    pending = AgentSuggestedMatch(
+        id="sug-2",
+        request_id="req-1",
+        candidate_request_id="req-c",
+        status=SUGGESTION_PENDING_CLARIFY,
+        evaluation={"clarifying_question": "Can you relocate?"},
+    )
+
+    async def fake_suggestions(*_args, **_kwargs):
+        return [strong, pending]
+
+    async def no_attachments(*_args, **_kwargs):
+        return [], []
+
+    async def no_open(*_args, **_kwargs):
+        return 0
+
+    monkeypatch.setattr("app.agents.context.list_suggestions", fake_suggestions)
+    monkeypatch.setattr("app.agents.context.context_attachments", no_attachments)
+    monkeypatch.setattr("app.agents.context.open_match_count", no_open)
+
+    request = _request(pending_questions=["Can you relocate?"])
+    ctx = ToolContext(
+        db=AsyncMock(),
+        profile=SimpleNamespace(id="u1"),
+        session=AgentSession(id="s1", user_id="u1"),
+        request=request,
+        user_message=None,
+        trigger="request_ready",
+        background_job={"kind": "screen", "status": "done", "possible_match": ["req-d"]},
+    )
+    packet = await build_context_packet(ctx)
+    assert packet["pending_questions"] == []
+    assert ctx.schedule_clarify is True
+
+    ctx.schedule_clarify = False
+    ctx.background_job = {"kind": "clarify", "status": "done", "strong_match": ["req-b"]}
+    packet = await build_context_packet(ctx)
+    assert packet["pending_questions"] == [
+        {"candidate_id": "req-c", "question": "Can you relocate?"}
+    ]
+    assert ctx.schedule_clarify is False

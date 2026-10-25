@@ -45,6 +45,7 @@ export type BrokerAttachment = {
   size_bytes: number | null
   url: string | null
   content_url: string | null
+  caption: string | null
   description: string | null
   status: string
   created_at: string
@@ -125,6 +126,19 @@ export type ConnectionDetail = {
   messages: ConnectionMessage[]
 }
 
+export type BrokerSuggestion = {
+  id: string
+  candidate_id: string
+  status: string
+  verdict?: string
+  recommended_action?: string
+  pending_clarify?: string | null
+  clarifying_question?: string
+  pending_questions?: string[]
+  missing_info?: string[]
+  card_message_id?: string | null
+}
+
 export type BrokerSessionDetail = {
   session: BrokerSession
   messages: BrokerMessage[]
@@ -133,14 +147,12 @@ export type BrokerSessionDetail = {
   connect_offer?: BrokerConnectOffer | null
   matches?: BrokerMatchLane[]
   connect_offers?: BrokerConnectOffer[]
+  suggestions?: BrokerSuggestion[]
 }
 
 export function getBrokerBackendUrl() {
-  return (
-    process.env.NEXT_PUBLIC_BACKEND_URL ||
-    process.env.BACKEND_URL ||
-    "http://127.0.0.1:8000"
-  )
+  const url = process.env.NEXT_PUBLIC_BACKEND_URL || process.env.BACKEND_URL || "";
+  return url; // empty string = relative path
 }
 
 function getBackendUrl() {
@@ -301,6 +313,26 @@ export function grantBrokerAttachment(
     {
       method: "POST",
       body: JSON.stringify({ match_id: matchId, granted })
+    }
+  )
+}
+
+export function respondToSuggestion(
+  accessToken: string,
+  sessionId: string,
+  suggestionId: string,
+  action: "interested" | "skip",
+  attachmentId?: string
+) {
+  return brokerFetch<BrokerSessionDetail>(
+    accessToken,
+    `/broker/sessions/${sessionId}/suggestions/${suggestionId}`,
+    {
+      method: "POST",
+      body: JSON.stringify({
+        action,
+        attachment_id: attachmentId || null
+      })
     }
   )
 }

@@ -7,6 +7,7 @@ import {
   parseAttachmentRequest,
   parseAttachmentShare
 } from "@/components/chat/attachment-cards"
+import { parseCandidateDeck } from "@/components/chat/candidate-card"
 import { parseConnectOffer, parseContactCard } from "@/components/chat/contact-card"
 import { EmptyState } from "@/components/chat/empty-state"
 import { MessageBubble, type MessageActions } from "@/components/chat/message-bubble"
@@ -72,7 +73,11 @@ export function MessageList({
           <>
             {clusterShareMessages(
               placeCardsAfterAssistantText(
-                messages.filter((message) => !parseConnectOffer(message.content))
+                messages.filter(
+                  (message) =>
+                    !parseConnectOffer(message.content) &&
+                    !parseAttachmentRequest(message.content)
+                )
               )
             ).map((group) => (
               <MessageBubble
@@ -94,11 +99,14 @@ function isShareMessage(message: BrokerMessage): boolean {
   return message.role === "assistant" && Boolean(parseAttachmentShare(message.content))
 }
 
+function isCandidateMessage(message: BrokerMessage): boolean {
+  return message.role === "assistant" && Boolean(parseCandidateDeck(message.content))
+}
+
 function isStructuredCard(message: BrokerMessage): boolean {
   if (message.role !== "assistant") return false
   return Boolean(
-    parseAttachmentRequest(message.content) ||
-      parseAttachmentPermission(message.content) ||
+    parseAttachmentPermission(message.content) ||
       parseAttachmentShare(message.content) ||
       parseContactCard(message.content)
   )
@@ -109,13 +117,17 @@ function placeCardsAfterAssistantText(messages: BrokerMessage[]): BrokerMessage[
   let index = 0
   while (index < messages.length) {
     const current = messages[index]
-    if (current.role !== "assistant") {
+    if (current.role !== "assistant" || isCandidateMessage(current)) {
       ordered.push(current)
       index += 1
       continue
     }
     const run: BrokerMessage[] = []
-    while (index < messages.length && messages[index].role === "assistant") {
+    while (
+      index < messages.length &&
+      messages[index].role === "assistant" &&
+      !isCandidateMessage(messages[index])
+    ) {
       run.push(messages[index])
       index += 1
     }
@@ -174,6 +186,7 @@ function mergeShareGroup(group: BrokerMessage[]): BrokerMessage {
       label: item.label,
       purpose: item.purpose,
       content_type: item.content_type,
+      description: item.description,
       original_filename: item.original_filename,
       url: item.url
     }))

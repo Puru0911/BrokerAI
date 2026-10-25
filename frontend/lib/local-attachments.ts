@@ -44,8 +44,10 @@ export function filesToConnectionAttachments(
 
 export function filesToLocalAttachments(
   files: File[],
-  sessionId: string | null
+  sessionId: string | null,
+  caption?: string | null
 ): BrokerAttachment[] {
+  const note = caption?.trim() || null
   return files.map((file, index) => {
     const contentType = file.type || guessContentType(file.name)
     return {
@@ -60,6 +62,7 @@ export function filesToLocalAttachments(
       size_bytes: file.size,
       url: null,
       content_url: URL.createObjectURL(file),
+      caption: note,
       description: null,
       status: "ready",
       created_at: new Date().toISOString()
@@ -69,7 +72,8 @@ export function filesToLocalAttachments(
 
 export function linkToLocalAttachment(
   url: string,
-  sessionId: string | null
+  sessionId: string | null,
+  caption?: string | null
 ): BrokerAttachment {
   let host = url
   try {
@@ -89,6 +93,7 @@ export function linkToLocalAttachment(
     size_bytes: null,
     url,
     content_url: null,
+    caption: caption?.trim() || null,
     description: null,
     status: "ready",
     created_at: new Date().toISOString()
@@ -101,7 +106,11 @@ export function localAttachmentsForSend(options: {
   content: string
   sessionId: string | null
 }): BrokerAttachment[] {
-  const items = filesToLocalAttachments(options.files, options.sessionId)
+  const items = filesToLocalAttachments(
+    options.files,
+    options.sessionId,
+    options.content
+  )
   const urls = [
     ...(options.link.trim() ? [options.link.trim()] : []),
     ...extractUrls(options.content)
@@ -110,7 +119,7 @@ export function localAttachmentsForSend(options: {
   for (const url of urls) {
     if (seen.has(url)) continue
     seen.add(url)
-    items.push(linkToLocalAttachment(url, options.sessionId))
+    items.push(linkToLocalAttachment(url, options.sessionId, options.content))
   }
   return items
 }

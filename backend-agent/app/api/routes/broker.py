@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile, status
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Query, UploadFile, status
 from fastapi.responses import RedirectResponse, Response
 from sqlalchemy import desc, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -38,14 +38,20 @@ from app.schemas.broker import (
     BrokerSessionCreate,
     BrokerSessionDetail,
     BrokerSessionRead,
+    BrokerSuggestionAction,
+    BrokerSuggestionRead,
     ConnectionSummaryRead,
 )
 from app.services.attachments import (
+    SHARE_PERSONAL,
+    SHARE_PUBLIC,
     AttachmentError,
+    blurred_attachment_bytes,
     classify_attachment,
     create_file_attachment,
     create_link_attachment,
     delete_attachment,
+    is_image_type,
     list_pending_upload_requests,
     load_attachment_bytes,
     record_grant,
@@ -77,9 +83,19 @@ from app.services.orchestrator import (
     create_session_with_agent,
     handle_session_message,
 )
-from app.services.outreach import schedule_outreach
+from app.services.outreach import schedule_match_kickoff, schedule_outreach
+from app.services.request_jobs import schedule_request_jobs
 from app.services.session_delete import SESSION_DELETED, delete_session_cascade
 from app.services.storage import StorageNotConfiguredError
+from app.services.evaluate import clarifying_questions_from
+from app.services.suggestions import (
+    SuggestionError,
+    get_owned_suggestion,
+    list_suggestions,
+    mark_interested,
+    packet_snapshot,
+    skip_suggestion,
+)
 from app.services.workflow import get_session_request, load_pair_requests
 
 logger = logging.getLogger(__name__)
@@ -161,6 +177,9 @@ async def _session_detail(
             offers_by_match=offers_by_match,
         )
     offer = offers[0] if offers else None
+    suggestion_rows = []
+    if request is not None:
+        suggestion_rows = await list_suggestions(db, request.id)
     session_read = await serialize_session_read(
         db, session, profile, request=request, lanes=lanes
     )
@@ -179,7 +198,29 @@ async def _session_detail(
         ),
         matches=lanes,
         connect_offers=[BrokerConnectOfferRead.model_validate(item) for item in offers],
+        suggestions=_suggestion_reads(suggestion_rows),
     )
+
+
+def _suggestion_reads(rows) -> list[BrokerSuggestionRead]:
+    reads: list[BrokerSuggestionRead] = []
+    for row in rows:
+        snap = packet_snapshot(row)
+        reads.append(
+            BrokerSuggestionRead(
+                id=row.id,
+                candidate_id=row.candidate_request_id,
+                status=str(snap.get("status") or row.status),
+                verdict=str(snap.get("verdict") or ""),
+                recommended_action=str(snap.get("recommended_action") or ""),
+                pending_clarify=snap.get("pending_clarify"),
+                clarifying_question=str(snap.get("clarifying_question") or ""),
+                pending_questions=list(snap.get("pending_questions") or []),
+                missing_info=list(snap.get("missing_info") or []),
+                card_message_id=row.card_message_id,
+            )
+        )
+    return reads
 
 
 def _attachment_http_error(exc: Exception) -> HTTPException:
@@ -368,6 +409,137 @@ async def act_on_introduction(
     return await _session_detail(db, session, profile)
 
 
+@router.post(
+    "/sessions/{session_id}/suggestions/{suggestion_id}",
+    response_model=BrokerSessionDetail,
+)
+async def act_on_suggestion(
+    session_id: str,
+    suggestion_id: str,
+    payload: BrokerSuggestionAction,
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> BrokerSessionDetail:
+    profile = await _require_profile(db, current_user)
+    session = await _get_owned_session(session_id, db, profile)
+    request = await get_session_request(db, session.id)
+    if request is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Broker request not found")
+    try:
+        row = await get_owned_suggestion(db, suggestion_id, request.id)
+        kickoff_match_id = None
+        kickoff_context = (
+            "This person marked Interested on a suggested pair. Write the pair "
+            "kickoff on this match lane and reach the other person with "
+            "message_party."
+        )
+        if payload.action == "skip":
+            await skip_suggestion(db, row)
+        else:
+            match, _reused, photo_id = await mark_interested(
+                db,
+                row=row,
+                source=request,
+                session_id=session.id,
+                user_id=profile.id,
+                requested_attachment_id=payload.attachment_id,
+            )
+            kickoff_match_id = match.id
+            other_questions = clarifying_questions_from(row.evaluation)
+            action = ""
+            if isinstance(row.evaluation, dict):
+                action = str(row.evaluation.get("recommended_action") or "")
+            if other_questions and action == "ask_other_person":
+                kickoff_context = (
+                    "This person marked Interested on a Close fit. Write the "
+                    "pair kickoff on this match lane and ask the other person "
+                    "these questions with message_party: "
+                    + " ".join(other_questions)
+                )
+            if photo_id:
+                photo_bit = (
+                    "This person also asked to see a personal photo "
+                    f"({photo_id}). Follow the personal-file grant path for "
+                    "that photo."
+                )
+                if other_questions and action == "ask_other_person":
+                    kickoff_context = f"{kickoff_context} {photo_bit}"
+                else:
+                    kickoff_context = (
+                        "This person marked Interested and asked to see a personal "
+                        f"photo ({photo_id}). Write the pair kickoff on this match "
+                        "lane, reach the other person with message_party, and follow "
+                        "the personal-file grant path for that photo."
+                    )
+    except SuggestionError as exc:
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    await db.commit()
+    if kickoff_match_id:
+        schedule_match_kickoff(
+            match_id=kickoff_match_id,
+            session_id=session.id,
+            request_id=request.id,
+            user_id=profile.id,
+            context=kickoff_context,
+        )
+    return await _session_detail(db, session, profile)
+
+
+@router.get("/sessions/{session_id}/suggestions/{suggestion_id}/attachments/{attachment_id}/content")
+async def suggestion_attachment_content(
+    session_id: str,
+    suggestion_id: str,
+    attachment_id: str,
+    variant: str | None = Query(default=None),
+    current_user: CurrentUser = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+) -> Response:
+    profile = await _require_profile(db, current_user)
+    session = await _get_owned_session(session_id, db, profile)
+    request = await get_session_request(db, session.id)
+    if request is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    try:
+        row = await get_owned_suggestion(db, suggestion_id, request.id)
+    except SuggestionError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found") from exc
+    if row.status not in {"presented", "interested"}:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    candidate = await db.get(AgentRequest, row.candidate_request_id)
+    attachment = await db.get(AgentAttachment, attachment_id)
+    if (
+        candidate is None
+        or attachment is None
+        or attachment.status != "ready"
+        or attachment.session_id != candidate.session_id
+        or not is_image_type(attachment.content_type)
+    ):
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+    kind = (variant or "").strip().lower()
+    try:
+        if kind == "blur":
+            if attachment.share_class != SHARE_PERSONAL:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+            data, content_type = await blurred_attachment_bytes(attachment)
+        else:
+            if attachment.share_class != SHARE_PUBLIC:
+                raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Attachment not found")
+            data, content_type = await load_attachment_bytes(attachment)
+    except FileNotFoundError as exc:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="File not found") from exc
+    except StorageNotConfiguredError as exc:
+        raise _attachment_http_error(exc) from exc
+    filename = sanitize_filename(attachment.original_filename or attachment.label or "file")
+    return Response(
+        content=data,
+        media_type=content_type or attachment.content_type or "application/octet-stream",
+        headers={
+            "Content-Disposition": f'inline; filename="{filename}"',
+            "Cache-Control": "private, max-age=300",
+        },
+    )
+
+
 @router.post("/matches/{match_id}/share-contacts", response_model=list[BrokerMessageRead])
 async def share_contacts(
     match_id: str,
@@ -431,6 +603,7 @@ async def create_session(
     await db.commit()
     schedule_outreach(result.outreach)
     schedule_mail(result.mail)
+    schedule_request_jobs(result.jobs)
     await db.refresh(result.session)
     return await _session_detail(
         db,
@@ -507,6 +680,7 @@ async def add_message(
     await db.commit()
     schedule_outreach(turn.outreach)
     schedule_mail(turn.mail)
+    schedule_request_jobs(turn.jobs)
     return payload
 
 

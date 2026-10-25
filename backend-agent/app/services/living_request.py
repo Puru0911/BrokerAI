@@ -4,8 +4,29 @@ from typing import Any
 
 from app.agents.tool_call_repair import coerce_str_list
 from app.db.models import AgentRequest
-from app.services.possible_pair import POSSIBLE_PAIR_KEY, possible_pair, set_possible_pair
 from app.services.privacy import public_details, redact_identity
+
+
+_VIEW_FILTER_CAP = 12
+_VIEW_FILTER_ITEM_MAX = 160
+
+
+def normalize_view_filters(values: Any) -> list[str]:
+    """Deduped overlay terms. Not part of the living brief."""
+    items: list[str] = []
+    for raw in values or []:
+        text = str(raw or "").strip()[:_VIEW_FILTER_ITEM_MAX].strip()
+        if text and text not in items:
+            items.append(text)
+        if len(items) >= _VIEW_FILTER_CAP:
+            break
+    return items
+
+
+def view_filters_of(request: AgentRequest | None) -> list[str]:
+    if request is None:
+        return []
+    return normalize_view_filters(getattr(request, "view_filters", None))
 
 
 def living_request_dict(details: dict[str, Any] | None) -> dict[str, Any]:
@@ -47,11 +68,6 @@ def apply_request_patch(details: dict[str, Any] | None, patch: dict[str, Any]) -
             current[key] = coerce_str_list(value)
         elif key in str_fields:
             current[key] = str(value).strip()
-    pending = possible_pair(details)
-    if pending is not None:
-        current = set_possible_pair(current, pending)
-    elif details and POSSIBLE_PAIR_KEY in details:
-        current.pop(POSSIBLE_PAIR_KEY, None)
     return current
 
 
@@ -79,7 +95,7 @@ def redacted_living_request(request: AgentRequest) -> dict[str, Any]:
 
 
 def counterpart_brief_stub(request_id: str | None) -> dict[str, Any]:
-    """Pre-accept other_brief for the chat packet. Full brief is on get_match_events."""
+    """Pre-accept other_brief for the chat packet. Scoped facts come from get_match_brief."""
     return {
         "request_id": request_id,
         "possible_counterpart": True,

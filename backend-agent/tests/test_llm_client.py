@@ -41,7 +41,7 @@ def test_build_chat_model_uses_chatgroq_with_parsed_reasoning(
     assert kwargs["reasoning_format"] == "parsed"
     assert kwargs["reasoning_effort"] == "low"
     assert kwargs["max_tokens"] == 2048
-    assert kwargs["model_kwargs"] == {"top_p": 0.85}
+    assert kwargs["model_kwargs"] == {"top_p": 0.8}
     assert "base_url" not in kwargs
 
 
@@ -76,8 +76,8 @@ def test_build_broker_chat_model_uses_thinking_sampling_on_groq(
         build_broker_chat_model()
 
     kwargs = mock_cls.call_args.kwargs
-    assert kwargs["temperature"] == 0.4
-    assert kwargs["model_kwargs"] == {"top_p": 0.85}
+    assert kwargs["temperature"] == 0.3
+    assert kwargs["model_kwargs"] == {"top_p": 0.8}
     assert kwargs["reasoning_format"] == "parsed"
     assert kwargs["reasoning_effort"] == "low"
 
@@ -130,7 +130,12 @@ def test_build_chat_model_openrouter_uses_chat_openrouter_with_reasoning(
         "exclude": False,
     }
     assert kwargs["timeout"] == 60_000
-    assert kwargs["top_p"] == 0.85
+    assert kwargs["top_p"] == 0.8
+    assert kwargs["openrouter_provider"] == {
+        "order": ["deepinfra", "novita", "coreweave", "parasail"],
+        "allow_fallbacks": True,
+        "require_parameters": True,
+    }
     assert kwargs["app_title"] == "BrokerAI"
     assert kwargs["app_url"] == settings.public_app_url
     assert "reasoning_format" not in kwargs
@@ -151,7 +156,8 @@ def test_build_chat_model_openrouter_can_omit_reasoning_per_call(
 
     kwargs = openrouter_cls.call_args.kwargs
     assert "reasoning" not in kwargs
-    assert "top_p" not in kwargs
+    assert kwargs["top_p"] == 0.8
+    assert kwargs["openrouter_provider"]["order"][0] == "deepinfra"
 
 
 def test_build_chat_model_groq_can_omit_reasoning_per_call(
@@ -191,7 +197,7 @@ async def test_invoke_text_model_disables_reasoning(
     assert "LOOKING FOR" in text
     kwargs = openrouter_cls.call_args.kwargs
     assert "reasoning" not in kwargs
-    assert "top_p" not in kwargs
+    assert kwargs["top_p"] == 0.8
 
 
 @pytest.mark.asyncio
@@ -265,7 +271,7 @@ async def test_invoke_structured_model_can_skip_reasoning(
     assert copy.title == "1BHK in Baner"
     kwargs = openrouter_cls.call_args.kwargs
     assert "reasoning" not in kwargs
-    assert "top_p" not in kwargs
+    assert kwargs["top_p"] == 0.8
     assert kwargs["max_tokens"] == 400
 
 
@@ -284,7 +290,7 @@ def test_build_chat_model_openrouter_omits_reasoning_when_disabled(
     kwargs = openrouter_cls.call_args.kwargs
     assert kwargs["model"] == "deepseek/deepseek-chat-v3-0324"
     assert "reasoning" not in kwargs
-    assert "top_p" not in kwargs
+    assert kwargs["top_p"] == 0.8
 
 
 def test_build_broker_chat_model_uses_thinking_sampling_on_openrouter(
@@ -301,10 +307,11 @@ def test_build_broker_chat_model_uses_thinking_sampling_on_openrouter(
         build_broker_chat_model()
 
     kwargs = openrouter_cls.call_args.kwargs
-    assert kwargs["temperature"] == 0.4
-    assert kwargs["top_p"] == 0.85
+    assert kwargs["temperature"] == 0.3
+    assert kwargs["top_p"] == 0.8
     assert kwargs["max_tokens"] == 2048
     assert kwargs["reasoning"]["effort"] == "medium"
+    assert kwargs["openrouter_provider"]["allow_fallbacks"] is True
 
 
 def test_build_chat_model_gemini_still_uses_chat_openai(

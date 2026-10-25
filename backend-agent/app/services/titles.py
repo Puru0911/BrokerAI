@@ -27,7 +27,7 @@ class RequestCopy(BaseModel):
 def welcome_message(agent_name: str | None = None) -> str:
     name = (agent_name if agent_name is not None else settings.agent_name).strip() or "BrokerAI"
     return (
-        f"Hi! I'm {name}. Tell me what you're looking for and I'll find you the right Person."
+        f"Hi! I'm {name}. Tell me what you're looking for and I'll find you the right people"
     )
 
 

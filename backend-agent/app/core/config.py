@@ -1,6 +1,5 @@
 from pathlib import Path
 
-from pydantic import field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -36,7 +35,7 @@ class Settings(BaseSettings):
     OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
     LLM_MODEL: str = "nvidia/nemotron-3-ultra-550b-a55b:free"
     OPENROUTER_REASONING_ENABLED: bool = True
-    OPENROUTER_REASONING_EFFORT: str = "medium"
+    OPENROUTER_REASONING_EFFORT: str = "low"
     OPENROUTER_REASONING_EXCLUDE: bool = False
     GROQ_API_KEY: str | None = None
     GROQ_BASE_URL: str = "https://api.groq.com/openai/v1"
@@ -52,10 +51,11 @@ class Settings(BaseSettings):
 
     AGENT_MAX_TOOL_STEPS: int = 16
     AGENT_MODEL_INVOKE_RETRIES: int = 3
-    # full = production copy. small / compressed / compact = shorter tool and helper prompts.
-    AGENT_PROMPT_SIZE: str = "full"
     MATCH_TIMEOUT_HOURS: int = 48
-    MAX_OPEN_MATCHES_PER_REQUEST: int = 3
+    # How many screened candidates may be presented at once on a request.
+    MAX_PAIR_PER_REQUEST: int = 3
+    # Deprecated alias; open matches are uncapped. Kept so old env files still load.
+    MAX_OPEN_MATCHES_PER_REQUEST: int | None = None
 
     LOG_LEVEL: str = "DEBUG"
     LOG_FILE: str = "logs/brokerai.log"
@@ -83,18 +83,6 @@ class Settings(BaseSettings):
     MAIL_REPLY_TO: str | None = None
     MAIL_ENABLED: bool = True
     MAIL_UNSUBSCRIBE_SECRET: str | None = None
-
-    @field_validator("AGENT_PROMPT_SIZE", mode="before")
-    @classmethod
-    def normalize_prompt_size(cls, value: object) -> str:
-        text = str(value or "full").strip().lower()
-        if text in {"small", "compressed", "compact", "short"}:
-            return "small"
-        return "full"
-
-    @property
-    def use_small_prompts(self) -> bool:
-        return self.AGENT_PROMPT_SIZE == "small"
 
     @property
     def vapid_key_file(self) -> Path:

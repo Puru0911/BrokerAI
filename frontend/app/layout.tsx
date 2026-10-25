@@ -1,9 +1,12 @@
 import "./globals.css"
 
 import { Plus_Jakarta_Sans } from "next/font/google"
+import type { Metadata } from "next"
 import type { ReactNode } from "react"
 
 import { ThemeSwitcher } from "@/components/theme-switcher"
+import { AGENT_NAME } from "@/lib/agent"
+import { SITE_DESCRIPTION, SITE_URL } from "@/lib/site"
 
 const sans = Plus_Jakarta_Sans({
   subsets: ["latin"],
@@ -11,9 +14,21 @@ const sans = Plus_Jakarta_Sans({
   variable: "--font-sans"
 })
 
-export const metadata = {
-  title: "BrokerAI",
-  description: "A private AI broker for requests, offers, matches, and deal-making."
+export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
+  title: {
+    default: AGENT_NAME,
+    template: `%s · ${AGENT_NAME}`
+  },
+  description: SITE_DESCRIPTION,
+  applicationName: AGENT_NAME,
+  openGraph: {
+    type: "website",
+    siteName: AGENT_NAME,
+    title: AGENT_NAME,
+    description: SITE_DESCRIPTION,
+    url: SITE_URL
+  }
 }
 
 const themeBootScript = `(function(){try{if(localStorage.getItem("brokerai-theme")==="poster"){document.documentElement.dataset.theme="poster"}}catch(e){}})()`
