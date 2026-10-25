@@ -42,7 +42,7 @@ def test_schedule_outreach_does_not_run_the_turn_inline() -> None:
     run.assert_not_called()
 
 
-def test_schedule_outreach_skips_jobs_without_a_match() -> None:
+def test_schedule_outreach_runs_request_lane_jobs() -> None:
     jobs = [
         OutreachJob(
             match_id=None,
@@ -63,7 +63,7 @@ def test_schedule_outreach_skips_jobs_without_a_match() -> None:
         patch("app.services.outreach.run_match_context_turn", new_callable=AsyncMock) as run,
     ):
         schedule_outreach(jobs)
-    assert created == []
+    assert created == ["outreach-request-req-b"]
     run.assert_not_called()
 
 

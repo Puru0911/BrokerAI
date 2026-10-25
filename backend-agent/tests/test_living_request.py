@@ -4,6 +4,8 @@ from app.services.living_request import (
     counterpart_brief_stub,
     living_request_dict,
     living_request_from_model,
+    normalize_view_filters,
+    view_filters_of,
 )
 from app.services.privacy import anonymized_request
 
@@ -80,6 +82,27 @@ def test_apply_request_patch_drops_a_legacy_possible_pair() -> None:
     patched = apply_request_patch(details, {"budget": "15k"})
     assert patched["budget"] == "15k"
     assert "possible_pair" not in patched
+
+
+def test_view_filters_are_not_part_of_the_living_brief() -> None:
+    assert normalize_view_filters([" Kharadi ", "Kharadi", "furnished", ""]) == [
+        "Kharadi",
+        "furnished",
+    ]
+    request = AgentRequest(
+        id="req-1",
+        session_id="sess-1",
+        user_id="user-1",
+        title="Need a flat",
+        summary="Looking",
+        details={"objective": "2BHK in Pune", "location": "Pune"},
+        status="open",
+        view_filters=["Kharadi"],
+    )
+    living = living_request_from_model(request)
+    assert living is not None
+    assert "view_filters" not in living
+    assert view_filters_of(request) == ["Kharadi"]
 
 
 def test_counterpart_brief_stub_does_not_include_the_other_bio() -> None:

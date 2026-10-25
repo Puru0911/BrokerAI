@@ -15,6 +15,7 @@ from app.db.models.broker import (
     AgentMessage,
     AgentPushSubscription,
     AgentRequest,
+    AgentRequestJob,
     AgentSession,
     AgentSuggestedMatch,
 )
@@ -37,6 +38,7 @@ __all__ = [
     "AgentMessage",
     "AgentPushSubscription",
     "AgentRequest",
+    "AgentRequestJob",
     "AgentSession",
     "AgentSuggestedMatch",
     "UserProfile",

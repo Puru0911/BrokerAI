@@ -42,6 +42,18 @@ async def init_db() -> None:
             )
             await connection.execute(
                 text(
+                    "ALTER TABLE agent_requests ADD COLUMN IF NOT EXISTS "
+                    "pending_questions JSONB NOT NULL DEFAULT '[]'::jsonb"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE agent_requests ADD COLUMN IF NOT EXISTS "
+                    "view_filters JSONB NOT NULL DEFAULT '[]'::jsonb"
+                )
+            )
+            await connection.execute(
+                text(
                     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS "
                     "notify_email BOOLEAN NOT NULL DEFAULT true"
                 )
@@ -64,6 +76,25 @@ async def init_db() -> None:
                 text(
                     "ALTER TABLE user_profiles ADD COLUMN IF NOT EXISTS "
                     "date_of_birth DATE"
+                )
+            )
+            await connection.execute(
+                text(
+                    "ALTER TABLE agent_attachments ADD COLUMN IF NOT EXISTS "
+                    "caption TEXT"
+                )
+            )
+            await connection.execute(
+                text(
+                    "UPDATE agent_attachments SET caption = description "
+                    "WHERE caption IS NULL AND description IS NOT NULL "
+                    "AND btrim(description) <> ''"
+                )
+            )
+            await connection.execute(
+                text(
+                    "UPDATE agent_attachments SET description = NULL "
+                    "WHERE caption IS NOT NULL AND description = caption"
                 )
             )
             await connection.execute(
@@ -96,6 +127,37 @@ async def init_db() -> None:
                         CONSTRAINT uq_agent_match_reads_pair UNIQUE (match_id, user_id)
                     )
                     """
+                )
+            )
+            await connection.execute(
+                text(
+                    """
+                    CREATE TABLE IF NOT EXISTS agent_request_jobs (
+                        id VARCHAR(36) PRIMARY KEY,
+                        request_id VARCHAR(36) NOT NULL REFERENCES agent_requests(id) ON DELETE CASCADE,
+                        session_id VARCHAR(36) NOT NULL,
+                        user_id VARCHAR(64) NOT NULL,
+                        kind VARCHAR(24) NOT NULL,
+                        status VARCHAR(16) NOT NULL DEFAULT 'queued',
+                        payload JSONB NOT NULL DEFAULT '{}'::jsonb,
+                        trigger_agent BOOLEAN NOT NULL DEFAULT true,
+                        created_at TIMESTAMPTZ DEFAULT now(),
+                        started_at TIMESTAMPTZ,
+                        finished_at TIMESTAMPTZ
+                    )
+                    """
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_request_jobs_request_id "
+                    "ON agent_request_jobs (request_id)"
+                )
+            )
+            await connection.execute(
+                text(
+                    "CREATE INDEX IF NOT EXISTS ix_agent_request_jobs_status "
+                    "ON agent_request_jobs (status)"
                 )
             )
             await connection.execute(

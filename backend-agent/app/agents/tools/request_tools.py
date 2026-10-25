@@ -17,10 +17,9 @@ from app.agents.tool_call_repair import coerce_optional_str_list, coerce_str_lis
 from app.agents.tools._common import make_tool
 from app.core.logging import clip
 from app.db.models import AgentRequest
-from app.rag.indexer import index_request
 from app.services.living_request import apply_request_patch, living_request_from_model
-
 from app.services.privacy import json_result
+from app.services.request_jobs import JOB_INDEX, enqueue_request_job
 from app.services.titles import generate_request_copy
 from app.services.workflow import REQUEST_OPEN, get_session_request, open_match_count
 
@@ -148,6 +147,8 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             if request.status != "closed":
                 request.status = REQUEST_OPEN
             request.indexed_at = None
+        request.pending_questions = []
+        request.view_filters = []
         ctx.request = request
         ctx.saved_this_turn = True
         ctx.session.title = title
@@ -184,6 +185,8 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
         if request.status != "closed":
             request.status = REQUEST_OPEN
         request.indexed_at = None
+        request.pending_questions = []
+        request.view_filters = []
         ctx.request = request
         logger.info(
             "update_request session=%s request_id=%s fields=%s",
@@ -205,27 +208,36 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
         if request is None:
             logger.info("index_request blocked session=%s reason=no_request", ctx.session.id)
             return json_result(ok=False, error="No brief is saved for this session.")
-        try:
-            await index_request(request)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("index_request failed session=%s request_id=%s error=%s", ctx.session.id, request.id, exc)
-            return json_result(ok=False, error=str(exc))
+        job = await enqueue_request_job(
+            ctx.db,
+            kind=JOB_INDEX,
+            request=request,
+            session_id=ctx.session.id,
+            user_id=ctx.profile.id,
+        )
         ctx.request = request
-        ctx.indexed_this_turn = request.indexed_at is not None
+        ctx.queued_jobs.append(job.id)
         logger.info(
-            "index_request session=%s request_id=%s indexed=%s",
+            "index_request queued session=%s request_id=%s job_id=%s",
             ctx.session.id,
             request.id,
-            ctx.indexed_this_turn,
+            job.id,
         )
         open_count = await open_match_count(ctx.db, request.id)
+        outcome = (
+            "Indexing started. Do not search until this request is indexed."
+            if job.status == "queued"
+            else "Indexing is already running."
+        )
         return json_result(
             ok=True,
+            accepted=True,
+            job_id=job.id,
             request_id=request.id,
-            indexed=ctx.indexed_this_turn,
-            searchable=ctx.indexed_this_turn,
+            indexed=request.indexed_at is not None,
+            searchable=request.indexed_at is not None,
             open_match_count=open_count,
-            outcome="Brief indexed." if ctx.indexed_this_turn else "Index did not complete.",
+            outcome=outcome,
         )
 
     async def get_request_snapshot(_args: NoArgs) -> str:

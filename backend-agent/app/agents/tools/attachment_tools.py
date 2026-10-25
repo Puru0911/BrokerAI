@@ -20,7 +20,6 @@ from app.services.attachments import (
     SHARE_PERSONAL,
     SHARE_PUBLIC,
     classify_attachment,
-    create_upload_request,
     pending_permission_exists,
     record_grant,
     request_share_permission,
@@ -71,6 +70,14 @@ class ClassifyAttachmentArgs(BaseModel):
     ] = Field(
         default="other",
         description="What this file or link is for.",
+    )
+    description: str = Field(
+        default="",
+        max_length=400,
+        description=(
+            "Short note of what this file is, from this chat, their caption, "
+            "and what you asked. Later turns use this when sharing."
+        ),
     )
 
 
@@ -135,21 +142,15 @@ def build_attachment_tools(ctx: ToolContext) -> list[BaseTool]:
     async def request_attachment(args: RequestAttachmentArgs) -> str:
         if args.purpose not in PURPOSE_VALUES:
             return json_result(ok=False, error="Unknown attachment purpose.")
-        _prompt, message = await create_upload_request(
-            ctx.db,
-            session_id=ctx.session.id,
-            user_id=ctx.profile.id,
-            purpose=args.purpose,
-            suggested_share_class=args.suggested_share_class,
-            hint=args.hint,
-            match_id=ctx.focus_match_id or ctx.trigger_match_id,
-        )
-        ctx.track(message)
         return json_result(
             ok=True,
-            request_id=_prompt.id,
             purpose=args.purpose,
-            outcome="Upload prompt shown in this chat.",
+            suggested_share_class=args.suggested_share_class,
+            hint=args.hint.strip(),
+            outcome=(
+                "No upload card was shown. Ask for the file or link in your reply. "
+                "They attach it with the control next to the message box."
+            ),
         )
 
     async def classify(args: ClassifyAttachmentArgs) -> str:
@@ -162,6 +163,7 @@ def build_attachment_tools(ctx: ToolContext) -> list[BaseTool]:
             share_class=args.share_class,
             label=args.label or None,
             purpose=args.purpose,
+            description=args.description or None,
         )
         return json_result(
             ok=True,
@@ -169,6 +171,8 @@ def build_attachment_tools(ctx: ToolContext) -> list[BaseTool]:
             share_class=updated.share_class,
             label=updated.label,
             purpose=updated.purpose,
+            caption=updated.caption,
+            description=updated.description,
             outcome=f"Classified as {updated.share_class}.",
         )
 

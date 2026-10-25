@@ -84,8 +84,10 @@ from app.services.orchestrator import (
     handle_session_message,
 )
 from app.services.outreach import schedule_match_kickoff, schedule_outreach
+from app.services.request_jobs import schedule_request_jobs
 from app.services.session_delete import SESSION_DELETED, delete_session_cascade
 from app.services.storage import StorageNotConfiguredError
+from app.services.evaluate import clarifying_questions_from
 from app.services.suggestions import (
     SuggestionError,
     get_owned_suggestion,
@@ -443,13 +445,32 @@ async def act_on_suggestion(
                 requested_attachment_id=payload.attachment_id,
             )
             kickoff_match_id = match.id
-            if photo_id:
+            other_questions = clarifying_questions_from(row.evaluation)
+            action = ""
+            if isinstance(row.evaluation, dict):
+                action = str(row.evaluation.get("recommended_action") or "")
+            if other_questions and action == "ask_other_person":
                 kickoff_context = (
-                    "This person marked Interested and asked to see a personal "
-                    f"photo ({photo_id}). Write the pair kickoff on this match "
-                    "lane, reach the other person with message_party, and follow "
-                    "the personal-file grant path for that photo."
+                    "This person marked Interested on a Close fit. Write the "
+                    "pair kickoff on this match lane and ask the other person "
+                    "these questions with message_party: "
+                    + " ".join(other_questions)
                 )
+            if photo_id:
+                photo_bit = (
+                    "This person also asked to see a personal photo "
+                    f"({photo_id}). Follow the personal-file grant path for "
+                    "that photo."
+                )
+                if other_questions and action == "ask_other_person":
+                    kickoff_context = f"{kickoff_context} {photo_bit}"
+                else:
+                    kickoff_context = (
+                        "This person marked Interested and asked to see a personal "
+                        f"photo ({photo_id}). Write the pair kickoff on this match "
+                        "lane, reach the other person with message_party, and follow "
+                        "the personal-file grant path for that photo."
+                    )
     except SuggestionError as exc:
         raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
     await db.commit()
@@ -582,6 +603,7 @@ async def create_session(
     await db.commit()
     schedule_outreach(result.outreach)
     schedule_mail(result.mail)
+    schedule_request_jobs(result.jobs)
     await db.refresh(result.session)
     return await _session_detail(
         db,
@@ -658,6 +680,7 @@ async def add_message(
     await db.commit()
     schedule_outreach(turn.outreach)
     schedule_mail(turn.mail)
+    schedule_request_jobs(turn.jobs)
     return payload
 
 

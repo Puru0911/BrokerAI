@@ -8,7 +8,7 @@ from pydantic import BaseModel, Field
 from app.agents.prompts import PAIR_EVALUATOR_PROMPT
 from app.db.models import AgentRequest
 from app.llm.client import invoke_structured_model, is_llm_configured, llm_configuration_error
-from app.services.living_request import living_request_dict
+from app.services.living_request import living_request_dict, normalize_view_filters
 
 RecommendedAction = Literal[
     "open_match",
@@ -32,6 +32,7 @@ class PairEvaluation(BaseModel):
     clarifying_questions: list[str] = Field(default_factory=list)
     next_questions: list[str] = Field(default_factory=list)
     rationale: str = ""
+    source_relative_brief: str = ""
     candidate_id: str = ""
 
 
@@ -58,6 +59,7 @@ async def evaluate_pair(
     candidate_request: AgentRequest,
     retrieval_distance: float | None = None,
     prior_events: list[dict[str, Any]] | None = None,
+    view_filters: list[str] | None = None,
 ) -> PairEvaluation:
     if not is_llm_configured():
         raise RuntimeError(llm_configuration_error())
@@ -72,11 +74,21 @@ async def evaluate_pair(
             "candidate_profile": living_request_dict(candidate_request.details),
             "similarity_score": similarity,
             "prior_events": prior_events or [],
+            "view_filters": normalize_view_filters(view_filters),
         },
         temperature=0.1,
     )
     evaluation.candidate_id = candidate_request.id
+    if not (evaluation.source_relative_brief or "").strip():
+        evaluation.source_relative_brief = source_relative_brief_fallback(evaluation)
     return evaluation
+
+
+def source_relative_brief_fallback(evaluation: PairEvaluation) -> str:
+    matched = [item.strip() for item in evaluation.matched if str(item).strip()]
+    if matched:
+        return " · ".join(matched[:4])
+    return "A possible counterpart for this request."
 
 
 async def evaluate_pairs(
@@ -84,8 +96,10 @@ async def evaluate_pairs(
     candidates: list[AgentRequest],
     *,
     prior_events_by_id: dict[str, list[dict[str, Any]]] | None = None,
+    view_filters: list[str] | None = None,
 ) -> list[PairEvaluation]:
     prior = prior_events_by_id or {}
+    overlay = normalize_view_filters(view_filters)
     if not candidates:
         return []
     return list(
@@ -95,6 +109,7 @@ async def evaluate_pairs(
                     source_request,
                     candidate,
                     prior_events=prior.get(candidate.id) or [],
+                    view_filters=overlay,
                 )
                 for candidate in candidates
             ]

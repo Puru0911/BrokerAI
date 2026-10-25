@@ -83,7 +83,13 @@ async def test_evaluate_pairs_stamps_each_candidate() -> None:
         status="open",
     )
 
-    async def fake_evaluate(source_request, candidate_request, retrieval_distance=None, prior_events=None):
+    async def fake_evaluate(
+        source_request,
+        candidate_request,
+        retrieval_distance=None,
+        prior_events=None,
+        view_filters=None,
+    ):
         return PairEvaluation(
             verdict="possible_match",
             score=60,
@@ -92,6 +98,11 @@ async def test_evaluate_pairs_stamps_each_candidate() -> None:
             clarifying_question="Can you relocate?",
         )
 
-    with patch("app.services.evaluate.evaluate_pair", side_effect=fake_evaluate):
-        results = await evaluate_pairs(source, [first, second])
+    with patch("app.services.evaluate.evaluate_pair", side_effect=fake_evaluate) as mocked:
+        results = await evaluate_pairs(
+            source,
+            [first, second],
+            view_filters=["Kharadi", "furnished"],
+        )
     assert [item.candidate_id for item in results] == ["cand-1", "cand-2"]
+    assert mocked.await_args_list[0].kwargs["view_filters"] == ["Kharadi", "furnished"]

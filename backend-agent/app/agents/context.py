@@ -16,8 +16,14 @@ from app.services.living_request import (
     counterpart_brief_stub,
     living_request_from_model,
     redacted_living_request,
+    view_filters_of,
 )
-from app.services.suggestions import all_pending_questions, list_suggestions, packet_snapshot
+from app.services.suggestions import (
+    STORED_SUGGESTION_STATUSES,
+    list_suggestions,
+    packet_snapshot,
+    pending_question_items,
+)
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_CONNECTED,
@@ -31,7 +37,6 @@ from app.services.workflow import (
 )
 
 Trigger = Literal["user_message", "request_ready", "match_timeout", "match_context"]
-SessionRole = Literal["source", "counterparty"]
 PartyTo = Literal["source", "candidate"]
 
 
@@ -83,6 +88,11 @@ class ToolContext:
     new_attachment_ids: list[str] = field(default_factory=list)
     queued_outreach: list[OutreachJob] = field(default_factory=list)
     queued_mail: list[MailJob] = field(default_factory=list)
+    queued_jobs: list[str] = field(default_factory=list)
+    background_job: dict[str, Any] | None = None
+    presented_this_turn: bool = False
+    schedule_clarify: bool = False
+    suppress_empty_fallback: bool = False
 
     def __post_init__(self) -> None:
         # Human-visible replies on this turn stay on the lane the user sent from.
@@ -110,20 +120,7 @@ def reply_lane_id(ctx: ToolContext) -> str | None:
     return ctx.reply_match_id
 
 
-async def resolve_session_role(ctx: ToolContext) -> SessionRole:
-    if ctx.request is None:
-        return "source"
-    match_id = focused_match_id(ctx)
-    if not match_id:
-        return "source"
-    match = await ctx.db.get(AgentMatch, match_id)
-    if match is not None and ctx.request.id == match.candidate_request_id:
-        return "counterparty"
-    return "source"
-
-
 async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
-    role = await resolve_session_role(ctx)
     living = living_request_from_model(ctx.request)
     open_matches: list[dict[str, Any]] = []
     recent_events: list[dict[str, Any]] = []
@@ -150,25 +147,41 @@ async def build_context_packet(ctx: ToolContext) -> dict[str, Any]:
         new_ids=ctx.new_attachment_ids,
     )
     suggested: list[dict[str, Any]] = []
-    pending_questions: list[str] = []
+    pending_questions: list[dict[str, str]] = []
     if ctx.request is not None and not focus_id:
-        suggestion_rows = await list_suggestions(ctx.db, ctx.request.id)
+        suggestion_rows = await list_suggestions(
+            ctx.db,
+            ctx.request.id,
+            statuses=STORED_SUGGESTION_STATUSES,
+        )
         suggested = [packet_snapshot(row) for row in suggestion_rows]
-        pending_questions = all_pending_questions(suggestion_rows)
+        pending_questions = pending_question_items(suggestion_rows)
+        job = ctx.background_job or {}
+        presenting = bool(
+            job.get("strong_match") or job.get("possible_match")
+        ) and job.get("kind") != "clarify"
+        if presenting and pending_questions:
+            pending_questions = []
+            ctx.schedule_clarify = True
+            for snap in suggested:
+                snap["pending_questions"] = []
+                snap["pending_clarify"] = None
+                snap["clarifying_question"] = ""
     live_open_count = 0
     if ctx.request is not None:
         live_open_count = await open_match_count(ctx.db, ctx.request.id)
     return {
-        "SESSION_ROLE": role,
         "TRIGGER": ctx.trigger,
         "LANE": lane,
         "focus_match_id": focus_id,
         "living_request": living,
+        "view_filters": view_filters_of(ctx.request) if not focus_id else [],
         "open_matches": open_matches,
         "open_match_count": live_open_count,
         "suggested_matches": suggested,
         "pending_questions": pending_questions,
         "recent_events": recent_events,
+        "background_job": ctx.background_job,
         "attention_pointer": attention,
         "current_user_message": user_text,
         "trigger_match_id": ctx.trigger_match_id,
@@ -215,6 +228,7 @@ async def _match_snapshot(ctx: ToolContext, match: AgentMatch) -> dict[str, Any]
             "label": item["label"],
             "purpose": item["purpose"],
             "content_type": item["content_type"],
+            "description": item.get("description"),
             "owner": "counterpart",
         }
         for item in other_attachments

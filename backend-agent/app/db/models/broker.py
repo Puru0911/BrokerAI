@@ -5,6 +5,7 @@ from uuid import uuid4
 
 from sqlalchemy import (
     JSON,
+    Boolean,
     DateTime,
     Float,
     ForeignKey,
@@ -87,6 +88,8 @@ class AgentRequest(Base):
     title: Mapped[str] = mapped_column(String(140))
     summary: Mapped[str] = mapped_column(Text)
     details: Mapped[dict] = mapped_column(JSONB, default=dict)
+    pending_questions: Mapped[list] = mapped_column(JSONB, default=list)
+    view_filters: Mapped[list] = mapped_column(JSONB, default=list)
     indexed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     waiting_match_id: Mapped[str | None] = mapped_column(String(36), index=True)
     created_at: Mapped[datetime] = mapped_column(
@@ -138,6 +141,29 @@ class AgentMatch(Base):
         server_default=func.now(),
         onupdate=func.now(),
     )
+
+
+class AgentRequestJob(Base):
+    __tablename__ = "agent_request_jobs"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=lambda: str(uuid4()))
+    request_id: Mapped[str] = mapped_column(
+        ForeignKey("agent_requests.id", ondelete="CASCADE"),
+        index=True,
+    )
+    session_id: Mapped[str] = mapped_column(String(36), index=True)
+    user_id: Mapped[str] = mapped_column(String(64), index=True)
+    kind: Mapped[str] = mapped_column(String(24), index=True)
+    status: Mapped[str] = mapped_column(String(16), default="queued", index=True)
+    payload: Mapped[dict] = mapped_column(JSONB, default=dict)
+    trigger_agent: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True),
+        default=utc_now,
+        server_default=func.now(),
+    )
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    finished_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
 
 
 class AgentSuggestedMatch(Base):
@@ -258,6 +284,7 @@ class AgentAttachment(Base):
     size_bytes: Mapped[int | None] = mapped_column(Integer)
     storage_key: Mapped[str | None] = mapped_column(String(512))
     url: Mapped[str | None] = mapped_column(Text)
+    caption: Mapped[str | None] = mapped_column(Text)
     description: Mapped[str | None] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(16), default="ready", index=True)
     created_at: Mapped[datetime] = mapped_column(

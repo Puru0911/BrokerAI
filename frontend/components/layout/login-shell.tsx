@@ -1,30 +1,15 @@
+import Link from "next/link"
 import type { ReactNode } from "react"
 
 import { BrandLockup } from "@/components/brand/wordmark"
 import { cn } from "@/lib/cn"
-
-const HEADLINE = "Tell us what you need. We’ll find the right person."
-
-const SUBHEAD =
-  "Talk the way you would to a trusted fixer. The broker looks for a fit, then introduces you when both sides are ready."
-
-const SUBHEAD_SHORT =
-  "Talk to the broker. It finds a fit, then introduces you when both sides are ready."
-
-const STEPS = [
-  {
-    title: "Say it in your own words",
-    body: "No forms to fill. Describe the person, place, or deal you’re after."
-  },
-  {
-    title: "The broker looks for a fit",
-    body: "It searches quietly and only brings someone forward when both of you can help each other."
-  },
-  {
-    title: "Meet when you both agree",
-    body: "Your details stay private. Contacts are shared only after both of you say yes."
-  }
-] as const
+import {
+  HEADLINE,
+  STEPS,
+  SUBHEAD,
+  SUBHEAD_SHORT
+} from "@/lib/marketing-copy"
+import { PRIVACY_PATH } from "@/lib/site"
 
 function Glow() {
   return (
@@ -43,12 +28,39 @@ function Glow() {
 
 function LoginBrand({ size }: { size: number }) {
   return (
-    <BrandLockup
-      markSize={size}
-      nameSize={size >= 80 ? "lg" : "md"}
-      inverse
-      subtitle="Private broker"
-    />
+    <Link href="/" className="inline-flex rounded-xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/40">
+      <BrandLockup
+        markSize={size}
+        nameSize={size >= 80 ? "lg" : "md"}
+        inverse
+        subtitle="Private broker"
+      />
+    </Link>
+  )
+}
+
+function LegalLine({ inverse = false }: { inverse?: boolean }) {
+  return (
+    <p
+      className={cn(
+        "text-center text-xs leading-5",
+        inverse ? "text-surface/65" : "text-muted"
+      )}
+    >
+      By continuing, you agree to our{" "}
+      <Link
+        href={PRIVACY_PATH}
+        className={cn(
+          "font-medium underline underline-offset-2",
+          inverse
+            ? "text-surface hover:text-white"
+            : "text-ink hover:text-accent"
+        )}
+      >
+        Privacy Policy
+      </Link>
+      .
+    </p>
   )
 }
 
@@ -121,11 +133,17 @@ export function LoginShell({ children }: { children: ReactNode }) {
             <Steps />
           </div>
         </div>
+        <div className="relative z-10 mt-auto pt-12">
+          <LegalLine inverse />
+        </div>
       </aside>
 
       <section className="flex flex-col justify-center bg-canvas px-5 py-10 lg:px-12 lg:py-16">
         <div className="mx-auto w-full max-w-[420px]">
           {children}
+          <div className="mt-6">
+            <LegalLine />
+          </div>
           <div className="mt-10 lg:hidden">
             <Steps compact />
           </div>

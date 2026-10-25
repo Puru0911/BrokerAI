@@ -77,8 +77,9 @@ _PROCESS_LEAK_MARKERS = (
     "accept_match",
     "offer_introduction",
     "share_contacts",
-    "search_again",
     "get_match_events",
+    "get_match_brief",
+    "answer_match_question",
     "get_request_snapshot",
     "request_attachment",
     "classify_attachment",
@@ -105,6 +106,16 @@ def looks_like_process_dump(text: str) -> bool:
 # Short closer after a longer update in the same turn ("All set", "That's all for now").
 _TRAILING_ACK_MAX = 120
 
+_QUIET_RETRY_ACK_MARKERS = (
+    "searching",
+    "restarted",
+    "still working",
+    "started a new search",
+    "looking again",
+    "i'll look again",
+    "i will look again",
+)
+
 
 def user_facing_reply_text(content: Any) -> str:
     """Ordinary assistant prose that should be shown. Empty when none or a process dump."""
@@ -112,6 +123,66 @@ def user_facing_reply_text(content: Any) -> str:
     if not text or looks_like_process_dump(text):
         return ""
     return text
+
+
+def _quiet_retry_turn(ctx: ToolContext) -> bool:
+    job = ctx.background_job or {}
+    return (
+        ctx.trigger == "request_ready"
+        and str(job.get("status") or "") == "failed"
+        and bool(ctx.queued_jobs)
+    )
+
+
+def _is_quiet_retry_ack(text: str) -> bool:
+    lowered = text.lower()
+    if text == NATURAL_FALLBACK_REPLY:
+        return True
+    return len(text) <= 200 and any(marker in lowered for marker in _QUIET_RETRY_ACK_MARKERS)
+
+
+def drop_quiet_retry_acks(ctx: ToolContext, replies: list[str]) -> list[str]:
+    """Drop short process acks when a failed job already queued a retry."""
+    if not _quiet_retry_turn(ctx):
+        return replies
+    kept = [text for text in replies if not _is_quiet_retry_ack(text)]
+    if len(kept) != len(replies):
+        ctx.suppress_empty_fallback = True
+        logger.info(
+            "dropped quiet retry ack session=%s dropped=%s kept=%s",
+            ctx.session.id,
+            len(replies) - len(kept),
+            len(kept),
+        )
+    return kept
+
+
+async def maybe_queue_clarify_followup(ctx: ToolContext) -> None:
+    """After presenting Strong/Close fit cards, wake again to ask this person's questions."""
+    if not ctx.presented_this_turn or ctx.request is None:
+        return
+    job = ctx.background_job or {}
+    if job.get("kind") == "clarify":
+        return
+    from app.services.request_jobs import JOB_CLARIFY, enqueue_request_job
+    from app.services.suggestions import all_pending_questions, list_suggestions
+
+    rows = await list_suggestions(ctx.db, ctx.request.id)
+    if not all_pending_questions(rows):
+        return
+    follow = await enqueue_request_job(
+        ctx.db,
+        kind=JOB_CLARIFY,
+        request=ctx.request,
+        session_id=ctx.session.id,
+        user_id=ctx.profile.id,
+    )
+    ctx.queued_jobs.append(follow.id)
+    logger.info(
+        "clarify follow-up queued session=%s job_id=%s",
+        ctx.session.id,
+        follow.id,
+    )
 
 
 def collapse_turn_replies(texts: list[str]) -> list[str]:
@@ -226,13 +297,39 @@ def model_thinking_text(message: Any) -> str:
     return "\n".join(unique).strip()
 
 
+_STRUCTURED_HISTORY_LABELS = {
+    "broker_candidate_cards": "[candidate cards shown]",
+    "broker_candidate_card": "[candidate card shown]",
+    "broker_contact_card": "[contact card shown]",
+    "broker_connect_offer": "[introduction control shown]",
+    "broker_attachment_request": "[upload request shown]",
+    "broker_attachment_permission": "[share permission shown]",
+    "broker_attachment_share": "[files shared]",
+}
+
+
+def history_visible_content(content: str | None) -> str:
+    """Plain chat text for the model. Structured cards become placeholders."""
+    text = (content or "").strip()
+    if not text.startswith("{"):
+        return text
+    try:
+        payload = json.loads(text)
+    except json.JSONDecodeError:
+        return text
+    if isinstance(payload, dict) and payload.get("kind"):
+        kind = str(payload.get("kind") or "")
+        return _STRUCTURED_HISTORY_LABELS.get(kind, "[card shown]")
+    return text
+
+
 def _history_as_lc(messages: list[AgentMessage]) -> list[BaseMessage]:
     converted: list[BaseMessage] = []
     for message in messages:
         if message.role == "user":
-            converted.append(HumanMessage(content=message.content))
+            converted.append(HumanMessage(content=history_visible_content(message.content)))
         elif message.role == "assistant":
-            converted.append(AIMessage(content=message.content))
+            converted.append(AIMessage(content=history_visible_content(message.content)))
     return converted
 
 
@@ -248,7 +345,7 @@ def format_session_history_transcript(messages: list[AgentMessage]) -> str:
             speaker = "broker"
         else:
             continue
-        text = (message.content or "").strip()
+        text = history_visible_content(message.content)
         if not text:
             continue
         lines.append(f"{speaker}: {text}")
@@ -274,7 +371,6 @@ def build_turn_human_content(
 ) -> str:
     """Assemble the current-turn packet. Outreach and new work sit above history."""
     parts = [
-        f"SESSION_ROLE: {packet.get('SESSION_ROLE')}",
         f"TRIGGER: {packet.get('TRIGGER')}",
         f"LANE: {packet.get('LANE') or 'request'}",
     ]
@@ -310,6 +406,8 @@ def build_turn_human_content(
             f"suggested_matches:\n{json.dumps(packet.get('suggested_matches'), ensure_ascii=False, default=str)}",
             "",
             f"pending_questions:\n{json.dumps(packet.get('pending_questions') or [], ensure_ascii=False, default=str)}",
+            "",
+            f"background_job:\n{json.dumps(packet.get('background_job'), ensure_ascii=False, default=str)}",
             "",
             f"recent_events:\n{json.dumps(packet.get('recent_events'), ensure_ascii=False, default=str)}",
             "",
@@ -378,6 +476,20 @@ def is_retryable_provider_error(exc: BaseException) -> bool:
     return False
 
 
+def tool_bind_kwargs(provider: str | None = None) -> dict[str, Any]:
+    """Extra bind_tools kwargs that OpenRouter endpoints actually advertise.
+
+    `parallel_tool_calls` is a distinct OpenRouter parameter. No qwen/qwen3.8-27b
+    host (DeepInfra, Novita, CoreWeave, Parasail, or fallbacks) lists it. With
+    `require_parameters: true` that 404s: "No endpoints found that can handle
+    the requested parameters." Python still runs tool calls one at a time.
+    """
+    name = (provider or llm_runtime_info()["provider"]).strip().lower()
+    if name == "openrouter":
+        return {}
+    return {"parallel_tool_calls": False}
+
+
 def _tool_names(tool_calls: list[Any]) -> list[str]:
     names: list[str] = []
     for call in tool_calls:
@@ -386,6 +498,11 @@ def _tool_names(tool_calls: list[Any]) -> list[str]:
         else:
             names.append(str(getattr(call, "name", "") or ""))
     return names
+
+
+def _call_signature(name: str, args: Any) -> str:
+    """Skip key for this turn. Identical name+args is not run twice."""
+    return json.dumps({"name": name, "args": args or {}}, sort_keys=True, default=str)
 
 
 async def run_tool_loop(
@@ -404,7 +521,7 @@ async def run_tool_loop(
     """
     tool_map = {tool.name: tool for tool in tools}
     if hasattr(llm, "bind_tools"):
-        bound = llm.bind_tools(tools, parallel_tool_calls=False)
+        bound = llm.bind_tools(tools, **tool_bind_kwargs())
     else:
         bound = llm
     final_text: str | None = None
@@ -487,7 +604,7 @@ async def run_tool_loop(
             name = call.get("name") if isinstance(call, dict) else getattr(call, "name", "")
             args = call.get("args") if isinstance(call, dict) else getattr(call, "args", {})
             call_id = call.get("id") if isinstance(call, dict) else getattr(call, "id", "")
-            signature = json.dumps({"name": name, "args": args}, sort_keys=True, default=str)
+            signature = _call_signature(str(name or ""), args)
             tool = tool_map.get(name)
             started = time.perf_counter()
             skip_reason = None
@@ -574,9 +691,8 @@ async def run_broker_turn(
         match_id=focused_match_id(ctx),
     )
     logger.debug(
-        "broker context session=%s role=%s lane=%s focus=%s open_matches=%s attention=%s history=%s",
+        "broker context session=%s lane=%s focus=%s open_matches=%s attention=%s history=%s",
         ctx.session.id,
-        packet.get("SESSION_ROLE"),
         packet.get("LANE"),
         packet.get("focus_match_id"),
         len(packet.get("open_matches") or []),
@@ -626,6 +742,7 @@ async def run_broker_turn(
                 replies = [NATURAL_FALLBACK_REPLY]
         else:
             replies = [final_text]
+    replies = drop_quiet_retry_acks(ctx, replies)
 
     lane_id = focused_match_id(ctx)
     opened_from_request = reply_lane_id(ctx) is None and lane_id is not None
@@ -651,6 +768,7 @@ async def run_broker_turn(
     else:
         for text in replies:
             await _persist_assistant_reply(ctx, text, match_id=lane_id)
+    await maybe_queue_clarify_followup(ctx)
     ctx.session.updated_at = utc_now()
 
     logger.info(

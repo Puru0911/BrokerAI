@@ -116,15 +116,11 @@ export function MessageBubble({
         {candidateDeck && !isUser ? (
           <CandidateDeck
             payload={candidateDeck}
-            accessToken={actions.accessToken}
             busyId={actions.suggestingId}
             onInterested={(suggestionId) =>
               actions.onSuggestion(suggestionId, "interested")
             }
             onSkip={(suggestionId) => actions.onSuggestion(suggestionId, "skip")}
-            onRequestPhoto={(suggestionId, attachmentId) =>
-              actions.onSuggestion(suggestionId, "interested", attachmentId)
-            }
           />
         ) : null}
         {!hidePlainText && message.content ? (

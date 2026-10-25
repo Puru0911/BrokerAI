@@ -72,9 +72,11 @@ export function MessageList({
         ) : (
           <>
             {clusterShareMessages(
-              clusterCandidateMessages(
-                placeCardsAfterAssistantText(
-                  messages.filter((message) => !parseConnectOffer(message.content))
+              placeCardsAfterAssistantText(
+                messages.filter(
+                  (message) =>
+                    !parseConnectOffer(message.content) &&
+                    !parseAttachmentRequest(message.content)
                 )
               )
             ).map((group) => (
@@ -97,14 +99,16 @@ function isShareMessage(message: BrokerMessage): boolean {
   return message.role === "assistant" && Boolean(parseAttachmentShare(message.content))
 }
 
+function isCandidateMessage(message: BrokerMessage): boolean {
+  return message.role === "assistant" && Boolean(parseCandidateDeck(message.content))
+}
+
 function isStructuredCard(message: BrokerMessage): boolean {
   if (message.role !== "assistant") return false
   return Boolean(
-    parseAttachmentRequest(message.content) ||
-      parseAttachmentPermission(message.content) ||
+    parseAttachmentPermission(message.content) ||
       parseAttachmentShare(message.content) ||
-      parseContactCard(message.content) ||
-      parseCandidateDeck(message.content)
+      parseContactCard(message.content)
   )
 }
 
@@ -113,13 +117,17 @@ function placeCardsAfterAssistantText(messages: BrokerMessage[]): BrokerMessage[
   let index = 0
   while (index < messages.length) {
     const current = messages[index]
-    if (current.role !== "assistant") {
+    if (current.role !== "assistant" || isCandidateMessage(current)) {
       ordered.push(current)
       index += 1
       continue
     }
     const run: BrokerMessage[] = []
-    while (index < messages.length && messages[index].role === "assistant") {
+    while (
+      index < messages.length &&
+      messages[index].role === "assistant" &&
+      !isCandidateMessage(messages[index])
+    ) {
       run.push(messages[index])
       index += 1
     }
@@ -129,44 +137,6 @@ function placeCardsAfterAssistantText(messages: BrokerMessage[]): BrokerMessage[
     )
   }
   return ordered
-}
-
-function isCandidateMessage(message: BrokerMessage): boolean {
-  return message.role === "assistant" && Boolean(parseCandidateDeck(message.content))
-}
-
-function clusterCandidateMessages(messages: BrokerMessage[]): BrokerMessage[] {
-  const result: BrokerMessage[] = []
-  let index = 0
-  while (index < messages.length) {
-    if (!isCandidateMessage(messages[index])) {
-      result.push(messages[index])
-      index += 1
-      continue
-    }
-    const run: BrokerMessage[] = []
-    while (index < messages.length && isCandidateMessage(messages[index])) {
-      run.push(messages[index])
-      index += 1
-    }
-    result.push(mergeCandidateGroup(run))
-  }
-  return result
-}
-
-function mergeCandidateGroup(group: BrokerMessage[]): BrokerMessage {
-  if (group.length === 1) return group[0]
-  const candidates = group.flatMap(
-    (message) => parseCandidateDeck(message.content)?.candidates || []
-  )
-  return {
-    ...group[0],
-    content: JSON.stringify({
-      kind: "broker_candidate_cards",
-      version: 1,
-      candidates
-    })
-  }
 }
 
 function clusterShareMessages(messages: BrokerMessage[]): BrokerMessage[][] {
@@ -216,6 +186,7 @@ function mergeShareGroup(group: BrokerMessage[]): BrokerMessage {
       label: item.label,
       purpose: item.purpose,
       content_type: item.content_type,
+      description: item.description,
       original_filename: item.original_filename,
       url: item.url
     }))

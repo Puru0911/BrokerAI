@@ -2,27 +2,32 @@ from __future__ import annotations
 
 import json
 
+import pytest
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 from langchain_core.tools import StructuredTool
 from pydantic import BaseModel
-import pytest
 
 from app.agents.runtime import (
+    _call_signature,
     build_turn_human_content,
     collapse_turn_replies,
     collect_turn_replies,
+    drop_quiet_retry_acks,
     format_session_history_transcript,
+    history_visible_content,
     inline_history_in_packet,
     is_retryable_provider_error,
     looks_like_process_dump,
+    maybe_queue_clarify_followup,
     message_text,
     model_thinking_text,
     run_tool_loop,
     split_open_match_lane_replies,
+    tool_bind_kwargs,
     user_facing_reply_text,
 )
-from app.db.models import AgentMessage
 from app.core.config import settings
+from app.db.models import AgentMessage
 
 
 class EchoArgs(BaseModel):
@@ -40,6 +45,11 @@ class FakeLLM:
         if not self.responses:
             return AIMessage(content="I have enough to keep going.")
         return self.responses.pop(0)
+
+
+def test_openrouter_tool_bind_omits_parallel_tool_calls() -> None:
+    assert tool_bind_kwargs("openrouter") == {}
+    assert tool_bind_kwargs("groq") == {"parallel_tool_calls": False}
 
 
 async def test_tool_loop_retries_failed_call_then_skips_success() -> None:
@@ -83,6 +93,58 @@ async def test_tool_loop_retries_failed_call_then_skips_success() -> None:
     assert tool_payloads[0] == {"ok": False, "error": "provider unavailable"}
     assert tool_payloads[1] == {"ok": True, "echo": "saved"}
     assert tool_payloads[2] == {"ok": False, "error": "Duplicate tool call skipped."}
+
+
+def test_identical_tool_calls_share_one_skip_signature() -> None:
+    first = _call_signature("search_counterparties", {})
+    second = _call_signature("search_counterparties", {})
+    assert first == second
+    echo = _call_signature("echo", {"text": "saved"})
+    assert echo != first
+    assert json.loads(echo)["name"] == "echo"
+
+
+async def test_tool_loop_skips_duplicate_search_counterparties() -> None:
+    calls: list[str] = []
+
+    async def search_first() -> str:
+        calls.append("search_counterparties")
+        return json.dumps({"ok": True, "accepted": True})
+
+    tools = [
+        StructuredTool.from_function(
+            name="search_counterparties",
+            description="Start search.",
+            coroutine=search_first,
+        ),
+    ]
+    llm = FakeLLM(
+        [
+            AIMessage(
+                content="",
+                tool_calls=[
+                    {"name": "search_counterparties", "args": {}, "id": "c1"},
+                    {"name": "search_counterparties", "args": {}, "id": "c2"},
+                ],
+            ),
+            AIMessage(content="I'll look and update you."),
+        ]
+    )
+    messages, final_text, _ = await run_tool_loop(
+        llm,
+        tools,
+        [SystemMessage(content="broker"), HumanMessage(content="find people")],
+        max_steps=4,
+    )
+    assert calls == ["search_counterparties"]
+    assert final_text == "I'll look and update you."
+    tool_payloads = [
+        json.loads(message.content)
+        for message in messages
+        if getattr(message, "type", None) == "tool"
+    ]
+    assert tool_payloads[0] == {"ok": True, "accepted": True}
+    assert tool_payloads[1] == {"ok": False, "error": "Duplicate tool call skipped."}
 
 
 async def test_tool_loop_retries_crashed_call() -> None:
@@ -342,7 +404,7 @@ def test_collect_turn_replies_ignores_empty_tool_step_content() -> None:
     messages = [
         AIMessage(
             content="",
-            tool_calls=[{"name": "search_again", "args": {}, "id": "c1"}],
+            tool_calls=[{"name": "search_counterparties", "args": {}, "id": "c1"}],
         ),
         ToolMessage(content='{"ok": true}', tool_call_id="c1"),
         AIMessage(content="I'll look and update you."),
@@ -689,6 +751,69 @@ async def test_open_match_from_request_lane_uses_canned_fallback_when_silent(
     assert replies[1].content == kickoff
 
 
+def test_quiet_retry_drops_searching_acks() -> None:
+    from unittest.mock import MagicMock
+
+    from app.agents.context import ToolContext
+    from app.agents.prompts import NATURAL_FALLBACK_REPLY
+
+    ctx = ToolContext(
+        db=MagicMock(),
+        profile=MagicMock(),
+        session=MagicMock(id="sess-1"),
+        request=None,
+        user_message=None,
+        trigger="request_ready",
+        background_job={"kind": "screen", "status": "failed"},
+    )
+    ctx.queued_jobs = ["job-retry"]
+    kept = drop_quiet_retry_acks(
+        ctx,
+        ["I've restarted the search.", NATURAL_FALLBACK_REPLY, "Can you relocate?"],
+    )
+    assert kept == ["Can you relocate?"]
+    assert ctx.suppress_empty_fallback is True
+
+
+@pytest.mark.asyncio
+async def test_clarify_followup_queues_after_present() -> None:
+    from unittest.mock import AsyncMock, MagicMock, patch
+
+    from app.agents.context import ToolContext
+    from app.services.request_jobs import JOB_CLARIFY
+
+    ctx = ToolContext(
+        db=AsyncMock(),
+        profile=MagicMock(id="user-a"),
+        session=MagicMock(id="sess-1"),
+        request=MagicMock(id="req-a"),
+        user_message=None,
+        trigger="request_ready",
+        background_job={"kind": "screen", "status": "done"},
+    )
+    ctx.presented_this_turn = True
+    ctx.request.pending_questions = ["Can you relocate?"]
+    job = MagicMock(id="job-clarify")
+    pending = MagicMock(
+        status="pending_clarify",
+        evaluation={"clarifying_question": "Can you relocate?"},
+        candidate_request_id="cand-1",
+    )
+    with (
+        patch(
+            "app.services.suggestions.list_suggestions",
+            AsyncMock(return_value=[pending]),
+        ),
+        patch(
+            "app.services.request_jobs.enqueue_request_job",
+            AsyncMock(return_value=job),
+        ) as enqueue,
+    ):
+        await maybe_queue_clarify_followup(ctx)
+    assert ctx.queued_jobs == ["job-clarify"]
+    assert enqueue.await_args.kwargs["kind"] == JOB_CLARIFY
+
+
 def test_looks_like_process_dump_detects_tool_narration() -> None:
     assert looks_like_process_dump("I called save_request and then search_counterparties.")
     assert looks_like_process_dump("First I'll index the brief, then I'll evaluate pairs.")
@@ -730,6 +855,24 @@ def test_clip_compacts_and_truncates() -> None:
     assert clip("x" * 50, limit=10) == "xxxxxxxxxx..."
 
 
+def test_history_strips_structured_cards() -> None:
+    cards = json.dumps(
+        {
+            "kind": "broker_candidate_cards",
+            "version": 1,
+            "candidates": [{"preview": "Looking for a PG in Latur, 96 Kuli Maratha."}],
+        }
+    )
+    assert history_visible_content(cards) == "[candidate cards shown]"
+    history = [
+        AgentMessage(role="user", content="Find someone"),
+        AgentMessage(role="assistant", content=cards),
+    ]
+    transcript = format_session_history_transcript(history)
+    assert "Latur" not in transcript
+    assert "[candidate cards shown]" in transcript
+
+
 def test_match_context_inlines_history_after_outreach() -> None:
     assert inline_history_in_packet("match_context") is True
     assert inline_history_in_packet("user_message") is False
@@ -760,6 +903,7 @@ def test_match_context_inlines_history_after_outreach() -> None:
         history=history,
         inline_history=True,
     )
+    assert "SESSION_ROLE" not in human
     assert "LANE: match" in human
     assert "focus_match_id: match-1" in human
     assert "open_match_count:" in human

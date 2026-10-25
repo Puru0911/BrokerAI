@@ -177,6 +177,7 @@ def counterpart_file_inventory(
                     "purpose": item.get("purpose"),
                     "label": item.get("label"),
                     "content_type": item.get("content_type"),
+                    "description": item.get("description"),
                     "owner": "counterpart",
                     "shared": item.get("id") in shared,
                 }
@@ -248,6 +249,7 @@ def public_attachment_payload(
         "original_filename": attachment.original_filename,
         "content_type": attachment.content_type,
         "size_bytes": attachment.size_bytes,
+        "caption": attachment.caption,
         "description": attachment.description,
         "status": attachment.status,
         "created_at": attachment.created_at,
@@ -451,7 +453,7 @@ async def create_file_attachment(
         content_type=mime,
         size_bytes=len(data),
         storage_key=storage_key,
-        description=(caption or "").strip() or None,
+        caption=(caption or "").strip() or None,
         status=STATUS_READY,
     )
     db.add(attachment)
@@ -486,7 +488,7 @@ async def create_link_attachment(
         share_class=SHARE_PENDING,
         label=host,
         url=url.strip(),
-        description=(caption or "").strip() or None,
+        caption=(caption or "").strip() or None,
         status=STATUS_READY,
     )
     db.add(attachment)
@@ -511,8 +513,6 @@ async def fulfill_upload_request(
         prompt.fulfilled_by_attachment_id = attachment.id
     if not attachment.purpose:
         attachment.purpose = prompt.purpose
-    if prompt.hint and not attachment.description:
-        attachment.description = prompt.hint
 
 
 async def attach_to_message(
@@ -588,6 +588,7 @@ async def classify_attachment(
     share_class: str,
     label: str | None,
     purpose: str | None,
+    description: str | None = None,
 ) -> AgentAttachment:
     if share_class not in {SHARE_PUBLIC, SHARE_PERSONAL}:
         raise AttachmentError("share_class must be public or personal.")
@@ -603,6 +604,9 @@ async def classify_attachment(
         attachment.label or ""
     ).strip():
         attachment.label = generic_file_label(attachment.content_type, attachment.purpose)
+    note = (description or "").strip()[:400]
+    if note:
+        attachment.description = note
     await db.flush()
     return attachment
 
@@ -827,6 +831,14 @@ def gallery_title(attachments: list[AgentAttachment]) -> str:
     purposes = {item.purpose for item in attachments if item.purpose}
     if purposes == {"listing_photos"}:
         return "Listing photos"
+    notes = [
+        str(item.description or "").strip()
+        for item in attachments
+        if str(item.description or "").strip()
+    ]
+    if notes and all(item == notes[0] for item in notes):
+        text = notes[0]
+        return text if len(text) <= 80 else text[:77] + "…"
     if all(is_image_type(item.content_type) for item in attachments):
         if len(attachments) == 1:
             return "Photo"
@@ -844,6 +856,7 @@ def _share_card_item(attachment: AgentAttachment) -> dict[str, Any]:
         "label": model_facing_label(attachment),
         "purpose": attachment.purpose,
         "content_type": attachment.content_type,
+        "description": attachment.description,
         "url": attachment.url if include_url else None,
     }
 
@@ -1154,6 +1167,7 @@ async def context_attachments(
             "label": model_facing_label(item),
             "purpose": item.purpose,
             "content_type": item.content_type,
+            "caption": item.caption,
             "description": item.description,
             "owner": "this_person",
         }

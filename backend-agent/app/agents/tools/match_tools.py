@@ -10,6 +10,8 @@ from pydantic import BaseModel, BeforeValidator, ConfigDict, Field
 from app.agents.context import OutreachJob, ToolContext, focused_match_id
 from app.agents.prompts import (
     TOOL_ACCEPT_MATCH,
+    TOOL_ANSWER_MATCH_QUESTION,
+    TOOL_GET_MATCH_BRIEF,
     TOOL_GET_MATCH_EVENTS,
     TOOL_MESSAGE_PARTY,
     TOOL_OFFER_INTRODUCTION,
@@ -27,9 +29,17 @@ from app.services.introduction import (
     record_party_go_ahead,
     upsert_connect_offer,
 )
-from app.services.living_request import counterpart_brief_stub, redacted_living_request
+from app.services.living_request import counterpart_brief_stub
 from app.services.privacy import json_result, redact_identity
-from app.services.suggestions import SUGGESTION_INTERESTED, suggestion_for_pair
+from app.services.screening import (
+    answer_from_briefs,
+    brief_from_suggestion,
+    build_source_relative_brief,
+)
+from app.services.suggestions import (
+    SUGGESTION_INTERESTED,
+    suggestion_for_pair,
+)
 from app.services.workflow import (
     MATCH_ACCEPTED,
     MATCH_CLOSED,
@@ -70,7 +80,7 @@ class MessagePartyArgs(BaseModel):
         default=None,
         min_length=8,
         max_length=36,
-        description="Screened candidate brief to reach when no match is open yet.",
+        description="Candidate brief when the pair already has an open match.",
     )
     context: str = Field(
         min_length=1,
@@ -163,6 +173,41 @@ class GetMatchEventsArgs(BaseModel):
     )
 
 
+class GetMatchBriefArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    candidate_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=36,
+        description="A screened candidate brief to summarize for this request.",
+    )
+    match_id: str | None = Field(
+        default=None,
+        description="An open match whose counterpart to summarize. Defaults to the focused match lane.",
+    )
+
+
+class AnswerMatchQuestionArgs(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    question: str = Field(
+        min_length=1,
+        max_length=800,
+        description="What this person asked about the candidate or match.",
+    )
+    candidate_id: str | None = Field(
+        default=None,
+        min_length=8,
+        max_length=36,
+        description="A screened candidate brief to check.",
+    )
+    match_id: str | None = Field(
+        default=None,
+        description="An open match whose counterpart to check. Defaults to the focused match lane.",
+    )
+
+
 async def _deliver_side(
     ctx: ToolContext,
     match: AgentMatch,
@@ -233,6 +278,35 @@ async def _close_match(
     )
 
 
+async def _resolve_counterpart(
+    ctx: ToolContext,
+    candidate_id: str | None,
+    match_id: str | None,
+):
+    if ctx.request is None:
+        return json_result(ok=False, error="No brief is saved for this session.")
+    cid = (candidate_id or "").strip()
+    mid = (match_id or "").strip()
+    match = None
+    other = None
+    if mid or (not cid and focused_match_id(ctx)):
+        try:
+            match, _current, other, _source = await owned_match(ctx, mid or None)
+        except ValueError as exc:
+            return json_result(ok=False, error=str(exc))
+    elif cid:
+        other = await ctx.db.get(AgentRequest, cid)
+        if other is None:
+            return json_result(ok=False, error="Candidate request not found.")
+        if other.id == ctx.request.id or other.user_id == ctx.request.user_id:
+            return json_result(ok=False, error="Cannot load this brief as a counterpart.")
+        match = await get_pair_match(ctx.db, ctx.request.id, other.id)
+    else:
+        return json_result(ok=False, error="Pass candidate_id or match_id.")
+    suggestion = await suggestion_for_pair(ctx.db, ctx.request.id, other.id)
+    return ctx.request, other, match, suggestion
+
+
 def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
     async def open_match(args: OpenMatchArgs) -> str:
         if ctx.request is None:
@@ -293,13 +367,19 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 ok=False,
                 error="This turn is already the other party's chat. Reply here. Do not contact them again now.",
             )
-        has_match = bool((args.match_id or "").strip() or focused_match_id(ctx))
-        if not has_match:
+        context = args.context.strip()
+        match_id = (args.match_id or "").strip() or focused_match_id(ctx)
+        candidate_id = (args.candidate_id or "").strip()
+        if not match_id and candidate_id and ctx.request is not None:
+            existing = await get_pair_match(ctx.db, ctx.request.id, candidate_id)
+            if existing is not None and existing.status in {MATCH_OPEN, MATCH_ACCEPTED}:
+                match_id = existing.id
+        if not match_id:
             return json_result(
                 ok=False,
-                error="Open a match first. The other person is not contacted until this person marks Interested.",
+                error="Present a Strong fit or Close fit card and wait for Interested before reaching them.",
             )
-        match, current, other, _source = await owned_match(ctx, args.match_id)
+        match, current, other, _source = await owned_match(ctx, match_id)
         if match.status not in {MATCH_OPEN, MATCH_ACCEPTED}:
             return json_result(ok=False, error="This match is not open for messaging.")
         target = other
@@ -309,12 +389,12 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 ok=False,
                 error="The other party could not be resolved. This person's text is the final reply.",
             )
-        context = args.context.strip()
         job = OutreachJob(
             match_id=match.id,
             to=to,
             context=context,
             from_session_id=ctx.session.id,
+            to_request_id=target.id,
         )
         if any(
             item.match_id == job.match_id and item.to == job.to for item in ctx.queued_outreach
@@ -492,13 +572,12 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
         )
 
     async def get_match_events(args: GetMatchEventsArgs) -> str:
-        match, _current, other, _source = await owned_match(ctx, args.match_id)
+        match, _current, _other, _source = await owned_match(ctx, args.match_id)
         events = await load_events(ctx.db, match.id, limit=40)
         return json_result(
             ok=True,
             match_id=match.id,
             status=match.status,
-            other_brief=redacted_living_request(other),
             notebook=match_notebook(match),
             events=[
                 {
@@ -509,6 +588,59 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
                 for event in events
             ],
             outcome=f"Loaded {len(events)} event(s). Status {match.status}.",
+        )
+
+    async def get_match_brief(args: GetMatchBriefArgs) -> str:
+        resolved = await _resolve_counterpart(ctx, args.candidate_id, args.match_id)
+        if isinstance(resolved, str):
+            return resolved
+        source, other, match, suggestion = resolved
+        stored = brief_from_suggestion(suggestion.evaluation if suggestion else None)
+        brief = await build_source_relative_brief(source, other, stored=stored)
+        if suggestion is not None and brief and isinstance(suggestion.evaluation, dict):
+            evaluation = dict(suggestion.evaluation)
+            if not str(evaluation.get("source_relative_brief") or "").strip():
+                evaluation["source_relative_brief"] = brief
+                suggestion.evaluation = evaluation
+        return json_result(
+            ok=True,
+            candidate_id=other.id,
+            match_id=match.id if match is not None else None,
+            brief=brief,
+            outcome="Complementary summary loaded.",
+        )
+
+    async def answer_match_question(args: AnswerMatchQuestionArgs) -> str:
+        resolved = await _resolve_counterpart(ctx, args.candidate_id, args.match_id)
+        if isinstance(resolved, str):
+            return resolved
+        source, other, match, suggestion = resolved
+        evaluation = suggestion.evaluation if suggestion and isinstance(suggestion.evaluation, dict) else {}
+        notebook = match_notebook(match) if match is not None else {}
+        result = await answer_from_briefs(
+            source,
+            other,
+            args.question.strip(),
+            evaluation=evaluation,
+            notebook=notebook,
+        )
+        if result.found:
+            return json_result(
+                ok=True,
+                found=True,
+                answer=result.answer,
+                candidate_id=other.id,
+                match_id=match.id if match is not None else None,
+                outcome="Answered from the brief.",
+            )
+        outcome = "Not in the brief. Use message_party."
+        return json_result(
+            ok=True,
+            found=False,
+            answer="",
+            candidate_id=other.id,
+            match_id=match.id if match is not None else None,
+            outcome=outcome,
         )
 
     return [
@@ -549,5 +681,17 @@ def build_match_tools(ctx: ToolContext) -> list[BaseTool]:
             description=TOOL_GET_MATCH_EVENTS,
             args_model=GetMatchEventsArgs,
             handler=get_match_events,
+        ),
+        make_tool(
+            name="get_match_brief",
+            description=TOOL_GET_MATCH_BRIEF,
+            args_model=GetMatchBriefArgs,
+            handler=get_match_brief,
+        ),
+        make_tool(
+            name="answer_match_question",
+            description=TOOL_ANSWER_MATCH_QUESTION,
+            args_model=AnswerMatchQuestionArgs,
+            handler=answer_match_question,
         ),
     ]

@@ -12,12 +12,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import settings
 from app.db.models import (
-    AgentAttachment,
     AgentMessage,
     AgentRequest,
     AgentSuggestedMatch,
 )
-from app.services.attachments import SHARE_PERSONAL, SHARE_PUBLIC, is_image_type, model_facing_label
 from app.services.evaluate import PairEvaluation, clarifying_questions_from
 from app.services.privacy import redact_identity
 from app.services.workflow import (
@@ -26,6 +24,7 @@ from app.services.workflow import (
     MATCH_OPEN,
     OpenMatchError,
     get_pair_match,
+    list_matches_for_request,
     open_working_match,
 )
 
@@ -33,10 +32,12 @@ logger = logging.getLogger(__name__)
 
 SUGGESTION_STRONG_MATCH = "strong_match"
 SUGGESTION_READY = "ready"  # legacy alias; treated as strong_match
+SUGGESTION_POSSIBLE_MATCH = "possible_match"
 SUGGESTION_PENDING_CLARIFY = "pending_clarify"
 SUGGESTION_PRESENTED = "presented"
 SUGGESTION_INTERESTED = "interested"
 SUGGESTION_SKIPPED = "skipped"
+SUGGESTION_NO_MATCH = "no_match"
 
 CANDIDATE_CARD_KIND = "broker_candidate_card"
 CANDIDATE_CARDS_KIND = "broker_candidate_cards"
@@ -45,12 +46,29 @@ CARD_VERSION = 1
 SuggestionAction = Literal["interested", "skip"]
 
 LIVE_MATCH_STATUSES = {MATCH_OPEN, MATCH_ACCEPTED, MATCH_CONNECTED}
+STORED_SUGGESTION_STATUSES = {
+    SUGGESTION_STRONG_MATCH,
+    SUGGESTION_READY,
+    SUGGESTION_POSSIBLE_MATCH,
+    SUGGESTION_PENDING_CLARIFY,
+    SUGGESTION_PRESENTED,
+    SUGGESTION_INTERESTED,
+    SUGGESTION_SKIPPED,
+    SUGGESTION_NO_MATCH,
+}
 ACTIVE_SUGGESTION_STATUSES = {
     SUGGESTION_STRONG_MATCH,
     SUGGESTION_READY,
+    SUGGESTION_POSSIBLE_MATCH,
     SUGGESTION_PENDING_CLARIFY,
     SUGGESTION_PRESENTED,
 }
+PRESENTABLE_STATUSES = {
+    SUGGESTION_STRONG_MATCH,
+    SUGGESTION_POSSIBLE_MATCH,
+}
+CARD_LABEL_STRONG = "strong_fit"
+CARD_LABEL_CLOSE = "close_fit"
 
 
 class SuggestionError(ValueError):
@@ -83,10 +101,74 @@ def pending_clarify_value(row: AgentSuggestedMatch) -> str | None:
 
 
 def all_pending_questions(rows: list[AgentSuggestedMatch]) -> list[str]:
-    """Unique pending questions across the whole screening set, pair order."""
+    """Unique this-user questions across pending_clarify rows, pair order."""
     items: list[str] = []
     for row in rows:
         for question in pending_questions_for(row):
+            if question not in items:
+                items.append(question)
+    return items
+
+
+def pending_question_items(rows: list[AgentSuggestedMatch]) -> list[dict[str, str]]:
+    """This-user questions tagged with the stored candidate they belong to."""
+    items: list[dict[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for row in rows:
+        candidate_id = str(row.candidate_request_id or "").strip()
+        if not candidate_id:
+            continue
+        for question in pending_questions_for(row):
+            key = (candidate_id, question)
+            if key in seen:
+                continue
+            seen.add(key)
+            items.append({"candidate_id": candidate_id, "question": question})
+    return items
+
+
+def request_pending_questions(request: AgentRequest | None) -> list[str]:
+    """Questions this person still owes, with no candidate or request ids."""
+    if request is None:
+        return []
+    items: list[str] = []
+    for raw in request.pending_questions or []:
+        text = str(raw or "").strip()
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def set_request_pending_questions(request: AgentRequest, questions: list[str]) -> None:
+    items: list[str] = []
+    for raw in questions:
+        text = str(raw or "").strip()
+        if text and text not in items:
+            items.append(text)
+    request.pending_questions = items
+
+
+def merge_request_pending_questions(request: AgentRequest, questions: list[str]) -> list[str]:
+    """Add new questions onto this brief. Returns the ones that were not already stored."""
+    current = request_pending_questions(request)
+    added: list[str] = []
+    for raw in questions:
+        text = str(raw or "").strip()
+        if text and text not in current:
+            current.append(text)
+            added.append(text)
+    request.pending_questions = current
+    return added
+
+
+def this_user_questions_from(evaluations: list[PairEvaluation]) -> list[str]:
+    items: list[str] = []
+    for evaluation in evaluations:
+        if evaluation.recommended_action != "ask_clarifying_question":
+            continue
+        if evaluation.verdict == "no_match":
+            continue
+        for question in clarifying_questions_from(evaluation):
             if question not in items:
                 items.append(question)
     return items
@@ -97,11 +179,6 @@ def packet_snapshot(row: AgentSuggestedMatch) -> dict[str, Any]:
     status = normalize_status(row.status)
     questions = pending_questions_for(row)
     question = questions[0] if questions else None
-    missing = [
-        str(item).strip()
-        for item in (evaluation.get("missing_info") or [])
-        if str(item).strip()
-    ]
     return {
         "suggestion_id": row.id,
         "candidate_id": row.candidate_request_id,
@@ -111,9 +188,9 @@ def packet_snapshot(row: AgentSuggestedMatch) -> dict[str, Any]:
         "pending_clarify": question,
         "clarifying_question": question or "",
         "pending_questions": questions,
-        "missing_info": missing,
         "score": evaluation.get("score"),
         "presented": status == SUGGESTION_PRESENTED,
+        "card_label": card_label_for(row),
     }
 
 
@@ -131,14 +208,71 @@ async def list_suggestions(
     return list(result.scalars().all())
 
 
+async def unpresented_reeval_ids(db: AsyncSession, request_id: str) -> list[str]:
+    """Stored Close fit / this-user-question pairs that search would skip."""
+    rows = await list_suggestions(
+        db,
+        request_id,
+        statuses={SUGGESTION_PENDING_CLARIFY, SUGGESTION_POSSIBLE_MATCH},
+    )
+    ids: list[str] = []
+    for row in rows:
+        if _already_shown(row):
+            continue
+        if row.candidate_request_id not in ids:
+            ids.append(row.candidate_request_id)
+    return ids
+
+
 async def skipped_candidate_ids(db: AsyncSession, request_id: str) -> set[str]:
     rows = await list_suggestions(db, request_id, statuses={SUGGESTION_SKIPPED})
     return {row.candidate_request_id for row in rows}
 
 
 async def known_candidate_ids(db: AsyncSession, request_id: str) -> set[str]:
-    rows = await list_suggestions(db, request_id)
+    rows = await list_suggestions(db, request_id, statuses=STORED_SUGGESTION_STATUSES)
     return {row.candidate_request_id for row in rows}
+
+
+async def user_ids_for_request_ids(
+    db: AsyncSession,
+    request_ids: set[str],
+) -> dict[str, str]:
+    """Map request id to owning user id."""
+    if not request_ids:
+        return {}
+    result = await db.execute(select(AgentRequest).where(AgentRequest.id.in_(request_ids)))
+    return {item.id: item.user_id for item in result.scalars().all() if item.user_id}
+
+
+async def suggestion_user_map(db: AsyncSession, request_id: str) -> dict[str, str]:
+    """Counterpart user_id -> first candidate_request_id already stored on this request."""
+    rows = await list_suggestions(
+        db,
+        request_id,
+        statuses=STORED_SUGGESTION_STATUSES - {SUGGESTION_NO_MATCH},
+    )
+    owners = await user_ids_for_request_ids(db, {row.candidate_request_id for row in rows})
+    mapping: dict[str, str] = {}
+    for row in rows:
+        user_id = owners.get(row.candidate_request_id)
+        if user_id and user_id not in mapping:
+            mapping[user_id] = row.candidate_request_id
+    return mapping
+
+
+async def live_counterpart_user_ids(db: AsyncSession, request: AgentRequest) -> set[str]:
+    matches = await list_matches_for_request(db, request.id, statuses=LIVE_MATCH_STATUSES)
+    other_ids: set[str] = set()
+    for match in matches:
+        other_id = (
+            match.candidate_request_id
+            if match.source_request_id == request.id
+            else match.source_request_id
+        )
+        if other_id:
+            other_ids.add(other_id)
+    return set((await user_ids_for_request_ids(db, other_ids)).values())
 
 
 async def suggestion_for_pair(
@@ -170,10 +304,14 @@ def status_for_evaluation(evaluation: PairEvaluation) -> str:
     action = evaluation.recommended_action
     verdict = evaluation.verdict
     if action == "skip" or verdict == "no_match":
-        return SUGGESTION_SKIPPED
+        return SUGGESTION_NO_MATCH
     if action == "ask_clarifying_question":
         return SUGGESTION_PENDING_CLARIFY
-    return SUGGESTION_STRONG_MATCH
+    if action == "ask_other_person":
+        return SUGGESTION_POSSIBLE_MATCH
+    if verdict == "strong_match":
+        return SUGGESTION_STRONG_MATCH
+    return SUGGESTION_POSSIBLE_MATCH
 
 
 def batch_waiting_on_clarify(rows: list[AgentSuggestedMatch]) -> bool:
@@ -185,6 +323,7 @@ async def upsert_from_evaluations(
     *,
     request_id: str,
     evaluations: list[PairEvaluation],
+    promote_pending: bool = False,
 ) -> list[AgentSuggestedMatch]:
     existing = {
         row.candidate_request_id: row
@@ -199,6 +338,15 @@ async def upsert_from_evaluations(
         payload = evaluation.model_dump()
         next_status = status_for_evaluation(evaluation)
         row = existing.get(candidate_id)
+        if (
+            promote_pending
+            and row is not None
+            and normalize_status(row.status) == SUGGESTION_PENDING_CLARIFY
+            and next_status
+            not in {SUGGESTION_SKIPPED, SUGGESTION_NO_MATCH, SUGGESTION_STRONG_MATCH}
+        ):
+            next_status = SUGGESTION_POSSIBLE_MATCH
+            payload["recommended_action"] = "ask_other_person"
         if row is None:
             row = AgentSuggestedMatch(
                 request_id=request_id,
@@ -210,25 +358,11 @@ async def upsert_from_evaluations(
             await db.flush()
             existing[candidate_id] = row
         else:
-            if row.status == SUGGESTION_INTERESTED:
+            if row.status in {SUGGESTION_INTERESTED, SUGGESTION_SKIPPED, SUGGESTION_PRESENTED}:
                 row.evaluation = payload
                 row.updated_at = now
                 rows.append(row)
                 continue
-            if row.status == SUGGESTION_SKIPPED and next_status == SUGGESTION_SKIPPED:
-                row.evaluation = payload
-                row.updated_at = now
-                rows.append(row)
-                continue
-            if row.status == SUGGESTION_PRESENTED:
-                if next_status == SUGGESTION_SKIPPED:
-                    row.status = SUGGESTION_SKIPPED
-                    await _stamp_card(db, row, SUGGESTION_SKIPPED)
-                else:
-                    row.evaluation = payload
-                    row.updated_at = now
-                    rows.append(row)
-                    continue
             else:
                 row.status = next_status
             row.evaluation = payload
@@ -238,11 +372,53 @@ async def upsert_from_evaluations(
     return rows
 
 
+def card_label_for(row: AgentSuggestedMatch) -> str:
+    evaluation = row.evaluation if isinstance(row.evaluation, dict) else {}
+    verdict = str(evaluation.get("verdict") or "").strip()
+    action = str(evaluation.get("recommended_action") or "").strip()
+    status = normalize_status(row.status)
+    if verdict == "strong_match" and action != "ask_other_person":
+        return CARD_LABEL_STRONG
+    if (
+        status == SUGGESTION_POSSIBLE_MATCH
+        or action == "ask_other_person"
+        or verdict == "possible_match"
+    ):
+        return CARD_LABEL_CLOSE
+    return CARD_LABEL_STRONG
+
+
+def _redacted_phrases(values: Any) -> list[str]:
+    items: list[str] = []
+    for raw in values or []:
+        text = redact_identity(str(raw or "").strip())
+        if text and text not in items:
+            items.append(text)
+    return items
+
+
+def card_fits_for(row: AgentSuggestedMatch) -> list[str]:
+    evaluation = row.evaluation if isinstance(row.evaluation, dict) else {}
+    return _redacted_phrases(evaluation.get("matched"))[:4]
+
+
+def card_still_open_for(row: AgentSuggestedMatch) -> list[str]:
+    evaluation = row.evaluation if isinstance(row.evaluation, dict) else {}
+    items = _redacted_phrases(evaluation.get("missing_info"))
+    for phrase in _redacted_phrases(evaluation.get("mismatched")):
+        if phrase not in items:
+            items.append(phrase)
+    return items[:4]
+
+
 def _preview_for_row(row: AgentSuggestedMatch, provided: str) -> str:
     text = redact_identity(provided.strip())
     if text:
         return text
     evaluation = row.evaluation if isinstance(row.evaluation, dict) else {}
+    relative = redact_identity(str(evaluation.get("source_relative_brief") or "").strip())
+    if relative:
+        return relative
     rationale = redact_identity(str(evaluation.get("rationale") or "").strip())
     if rationale:
         return rationale
@@ -256,23 +432,27 @@ def _preview_for_row(row: AgentSuggestedMatch, provided: str) -> str:
     return "A possible match for this request."
 
 
+def _already_shown(row: AgentSuggestedMatch) -> bool:
+    status = normalize_status(row.status)
+    return bool(row.card_message_id) or status in {
+        SUGGESTION_PRESENTED,
+        SUGGESTION_INTERESTED,
+        SUGGESTION_SKIPPED,
+    }
+
+
 async def present_candidates(
     db: AsyncSession,
     *,
     session_id: str,
     request: AgentRequest,
-    items: list[dict[str, str]],
+    items: list[dict[str, str]] | None = None,
 ) -> list[AgentSuggestedMatch]:
     cap = max_pairs()
     existing_rows = await list_suggestions(db, request.id)
-    if batch_waiting_on_clarify(existing_rows):
-        raise SuggestionError(
-            "Ask the pending clarifying questions first. Present every strong_match "
-            "candidate together after they answer."
-        )
     previews = {
         str(item.get("candidate_id") or "").strip(): str(item.get("preview") or "")
-        for item in items
+        for item in (items or [])
         if str(item.get("candidate_id") or "").strip()
     }
     by_candidate = {row.candidate_request_id: row for row in existing_rows}
@@ -280,38 +460,53 @@ async def present_candidates(
         row = by_candidate.get(candidate_id)
         if row is None:
             raise SuggestionError("Evaluate that candidate before presenting it.")
-        if normalize_status(row.status) not in {
-            SUGGESTION_STRONG_MATCH,
-            SUGGESTION_PRESENTED,
-        }:
+        if _already_shown(row):
+            continue
+        if normalize_status(row.status) not in PRESENTABLE_STATUSES:
             raise SuggestionError("That candidate is not ready to present.")
+    shown_users = await live_counterpart_user_ids(db, request)
+    settled_ids = {
+        row.candidate_request_id
+        for row in existing_rows
+        if _already_shown(row)
+    }
+    shown_users.update((await user_ids_for_request_ids(db, settled_ids)).values())
+    wanted = set(previews) if previews else None
     to_show: list[AgentSuggestedMatch] = []
     seen: set[str] = set()
     for row in existing_rows:
-        status = normalize_status(row.status)
-        if status != SUGGESTION_STRONG_MATCH:
+        if wanted is not None and row.candidate_request_id not in wanted:
+            continue
+        if _already_shown(row):
+            continue
+        if normalize_status(row.status) not in PRESENTABLE_STATUSES:
             continue
         if row.candidate_request_id in seen:
             continue
+        candidate = await db.get(AgentRequest, row.candidate_request_id)
+        if candidate is None:
+            raise SuggestionError("Candidate request not found.")
+        if candidate.user_id in shown_users:
+            continue
         seen.add(row.candidate_request_id)
+        shown_users.add(candidate.user_id)
         to_show.append(row)
         if len(to_show) >= cap:
             break
     if not to_show:
-        raise SuggestionError("No strong_match candidates are ready to present.")
+        raise SuggestionError("No new Strong fit or Close fit candidates are ready to present.")
 
     cards: list[dict[str, Any]] = []
     for row in to_show:
-        candidate = await db.get(AgentRequest, row.candidate_request_id)
-        if candidate is None:
-            raise SuggestionError("Candidate request not found.")
         cards.append(
             {
                 "suggestion_id": row.id,
                 "candidate_id": row.candidate_request_id,
                 "preview": _preview_for_row(row, previews.get(row.candidate_request_id, "")),
                 "status": SUGGESTION_PRESENTED,
-                "images": await _card_images(db, session_id, row, candidate),
+                "label": card_label_for(row),
+                "fits": card_fits_for(row),
+                "still_open": card_still_open_for(row),
             }
         )
     payload = {
@@ -319,24 +514,14 @@ async def present_candidates(
         "version": CARD_VERSION,
         "candidates": cards,
     }
-    message = None
-    shared_ids = {row.card_message_id for row in to_show if row.card_message_id}
-    if len(shared_ids) == 1:
-        existing_id = next(iter(shared_ids))
-        message = await db.get(AgentMessage, existing_id)
-        if message is not None and message.session_id != session_id:
-            message = None
-    if message is None:
-        message = AgentMessage(
-            session_id=session_id,
-            role="assistant",
-            content=json.dumps(payload, ensure_ascii=False),
-            match_id=None,
-        )
-        db.add(message)
-        await db.flush()
-    else:
-        message.content = json.dumps(payload, ensure_ascii=False)
+    message = AgentMessage(
+        session_id=session_id,
+        role="assistant",
+        content=json.dumps(payload, ensure_ascii=False),
+        match_id=None,
+    )
+    db.add(message)
+    await db.flush()
     now = datetime.now(UTC)
     for row in to_show:
         row.card_message_id = message.id
@@ -372,51 +557,6 @@ async def _stamp_card(db: AsyncSession, row: AgentSuggestedMatch, status: str) -
     else:
         return
     message.content = json.dumps(payload, ensure_ascii=False)
-
-
-async def _card_images(
-    db: AsyncSession,
-    session_id: str,
-    row: AgentSuggestedMatch,
-    candidate: AgentRequest,
-) -> list[dict[str, Any]]:
-    result = await db.execute(
-        select(AgentAttachment).where(
-            AgentAttachment.session_id == candidate.session_id,
-            AgentAttachment.status == "ready",
-        )
-    )
-    images: list[dict[str, Any]] = []
-    for attachment in result.scalars().all():
-        if not is_image_type(attachment.content_type):
-            continue
-        if attachment.share_class == SHARE_PUBLIC:
-            images.append(
-                {
-                    "attachment_id": attachment.id,
-                    "share_class": SHARE_PUBLIC,
-                    "label": model_facing_label(attachment),
-                    "content_url": (
-                        f"/broker/sessions/{session_id}/suggestions/{row.id}"
-                        f"/attachments/{attachment.id}/content"
-                    ),
-                    "requestable": False,
-                }
-            )
-        elif attachment.share_class == SHARE_PERSONAL:
-            images.append(
-                {
-                    "attachment_id": attachment.id,
-                    "share_class": SHARE_PERSONAL,
-                    "label": model_facing_label(attachment),
-                    "blur_url": (
-                        f"/broker/sessions/{session_id}/suggestions/{row.id}"
-                        f"/attachments/{attachment.id}/content?variant=blur"
-                    ),
-                    "requestable": True,
-                }
-            )
-    return images[:6]
 
 
 async def skip_suggestion(db: AsyncSession, row: AgentSuggestedMatch) -> AgentSuggestedMatch:
@@ -471,17 +611,4 @@ async def mark_interested(
     return match, reused, requested_attachment_id
 
 
-def suggestion_content_path(
-    session_id: str,
-    suggestion_id: str,
-    attachment_id: str,
-    *,
-    variant: str | None = None,
-) -> str:
-    path = (
-        f"/broker/sessions/{session_id}/suggestions/{suggestion_id}"
-        f"/attachments/{attachment_id}/content"
-    )
-    if variant:
-        return f"{path}?variant={variant}"
-    return path
+

@@ -52,6 +52,7 @@ export type AttachmentSharePayload = {
     label?: string | null
     purpose?: string | null
     content_type?: string | null
+    description?: string | null
     original_filename?: string | null
     url?: string | null
   }>
@@ -421,6 +422,7 @@ export function AttachmentShareCard({
         label: item.label,
         purpose: item.purpose,
         content_type: item.content_type,
+        description: item.description,
         original_filename: item.original_filename,
         url: item.url
       }))

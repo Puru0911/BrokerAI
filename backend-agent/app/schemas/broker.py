@@ -55,6 +55,7 @@ class BrokerAttachmentRead(BaseModel):
     size_bytes: int | None
     url: str | None = None
     content_url: str | None = None
+    caption: str | None
     description: str | None
     status: str
     created_at: datetime
@@ -82,6 +83,7 @@ class BrokerAttachmentRead(BaseModel):
             size_bytes=attachment.size_bytes,
             url=attachment.url if include_url else None,
             content_url=content_url,
+            caption=attachment.caption,
             description=attachment.description,
             status=attachment.status,
             created_at=attachment.created_at,

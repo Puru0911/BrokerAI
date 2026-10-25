@@ -45,6 +45,7 @@ export type BrokerAttachment = {
   size_bytes: number | null
   url: string | null
   content_url: string | null
+  caption: string | null
   description: string | null
   status: string
   created_at: string
