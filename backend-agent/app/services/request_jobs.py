@@ -38,23 +38,46 @@ JOB_SCREEN = "screen"
 JOB_EVALUATE = "evaluate"
 JOB_CLARIFY = "clarify"
 
-_PARSE_FAILURE_MARKERS = (
-    "failed to parse",
-    "outputparser",
-    "validation error",
-    "jsondecodeerror",
-    "invalid json",
-    "pydantic",
-)
-
 STATUS_QUEUED = "queued"
 STATUS_RUNNING = "running"
 STATUS_DONE = "done"
 STATUS_FAILED = "failed"
 
 OPEN_STATUSES = {STATUS_QUEUED, STATUS_RUNNING}
+_JOB_ERROR_MAX = 400
 
 _session_locks: dict[str, asyncio.Lock] = {}
+
+
+class JobRetryBlocked(Exception):
+    """Same-kind enqueue refused on a failed request_ready turn."""
+
+    def __init__(self, kind: str) -> None:
+        self.kind = kind
+        super().__init__(
+            f"This {kind} job already failed. It will not run again until the person writes."
+        )
+
+
+def retry_blocked_kind(ctx: ToolContext | None) -> str | None:
+    if ctx is None:
+        return None
+    job = ctx.background_job or {}
+    if ctx.trigger != "request_ready":
+        return None
+    if str(job.get("status") or "") != STATUS_FAILED:
+        return None
+    kind = str(job.get("kind") or "").strip()
+    return kind or None
+
+
+def clip_job_error(error: Any) -> str | None:
+    text = str(error or "").strip()
+    if not text:
+        return None
+    if len(text) <= _JOB_ERROR_MAX:
+        return text
+    return text[: _JOB_ERROR_MAX - 3].rstrip() + "..."
 
 
 def session_turn_lock(session_id: str) -> asyncio.Lock:
@@ -81,7 +104,16 @@ async def enqueue_request_job(
     candidate_ids: list[str] | None = None,
     trigger_agent: bool = True,
     replace: bool = False,
+    ctx: ToolContext | None = None,
 ) -> AgentRequestJob:
+    blocked = retry_blocked_kind(ctx)
+    if blocked and kind == blocked:
+        logger.info(
+            "request job retry blocked kind=%s request_id=%s",
+            kind,
+            request.id,
+        )
+        raise JobRetryBlocked(kind)
     if kind == JOB_INDEX:
         trigger_agent = False
         await _fail_open_jobs(
@@ -162,7 +194,8 @@ def job_packet(job: AgentRequestJob | None) -> dict[str, Any] | None:
     if job is None:
         return None
     payload = dict(job.payload or {})
-    payload.pop("error", None)
+    error = payload.pop("error", None)
+    failed = job.status == STATUS_FAILED
     return {
         "job_id": job.id,
         "kind": job.kind,
@@ -174,11 +207,13 @@ def job_packet(job: AgentRequestJob | None) -> dict[str, Any] | None:
         "pending_clarify": payload.get("pending_clarify") or [],
         "pending_questions": payload.get("pending_questions") or [],
         "skipped": payload.get("skipped") or [],
+        "errors": payload.get("errors") or [],
         "hold_cards": payload.get("hold_cards"),
         "indexed": payload.get("indexed"),
         "searchable": payload.get("searchable"),
         "view_filters": payload.get("view_filters") or [],
-        "error": payload.get("error") if job.status == STATUS_FAILED else None,
+        "error": clip_job_error(error) if failed else None,
+        "retry_allowed": not failed,
     }
 
 
@@ -275,7 +310,7 @@ async def _execute_job(job_id: str) -> None:
             await db.commit()
             return
         try:
-            payload = await _run_kind_with_parse_retry(db, job, request)
+            payload = await _run_kind(db, job, request)
             outreach_jobs = list(payload.pop("_outreach", []) or [])
             job.payload = payload
             job.status = STATUS_DONE
@@ -323,10 +358,6 @@ async def _run_kind(
             "searchable": request.indexed_at is not None,
             "request_id": request.id,
         }
-    if request.indexed_at is None:
-        raise RuntimeError("This brief is not indexed.")
-    if job.kind == JOB_SCREEN:
-        return await screen_request(db, request, job=job)
     if job.kind == JOB_EVALUATE:
         ids = await resolve_evaluate_ids(
             db,
@@ -336,33 +367,13 @@ async def _run_kind(
         if not ids:
             return screening_empty()
         return await evaluate_candidate_ids(db, request, ids)
+    if request.indexed_at is None:
+        raise RuntimeError("This brief is not indexed.")
+    if job.kind == JOB_SCREEN:
+        return await screen_request(db, request, job=job)
     if job.kind == JOB_CLARIFY:
         return await clarify_packet(db, request)
     raise RuntimeError(f"Unknown job kind {job.kind}")
-
-
-def _is_parse_failure(exc: BaseException) -> bool:
-    blob = f"{type(exc).__name__} {exc}".lower()
-    return any(marker in blob for marker in _PARSE_FAILURE_MARKERS)
-
-
-async def _run_kind_with_parse_retry(
-    db: AsyncSession,
-    job: AgentRequestJob,
-    request: AgentRequest,
-) -> dict[str, Any]:
-    try:
-        return await _run_kind(db, job, request)
-    except Exception as exc:
-        if job.kind not in {JOB_SCREEN, JOB_EVALUATE} or not _is_parse_failure(exc):
-            raise
-        logger.warning(
-            "request job silent parse retry job_id=%s kind=%s error=%s",
-            job.id,
-            job.kind,
-            exc,
-        )
-        return await _run_kind(db, job, request)
 
 
 async def clarify_packet(db: AsyncSession, request: AgentRequest) -> dict[str, Any]:

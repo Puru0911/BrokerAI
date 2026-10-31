@@ -816,6 +816,7 @@ async def test_clarify_followup_queues_after_present() -> None:
 
 def test_looks_like_process_dump_detects_tool_narration() -> None:
     assert looks_like_process_dump("I called save_request and then search_counterparties.")
+    assert looks_like_process_dump("I called update_search_brief then update_request_details.")
     assert looks_like_process_dump("First I'll index the brief, then I'll evaluate pairs.")
     assert looks_like_process_dump("I will classify_attachment and then share_attachment.")
     assert looks_like_process_dump("I called offer_introduction.")

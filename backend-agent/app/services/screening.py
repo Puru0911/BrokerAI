@@ -203,18 +203,21 @@ async def screen_request(
             request=request,
         )
     prior = await _prior_events_for(db, request.id, candidates)
-    evaluations = await evaluate_pairs(
+    evaluations, parse_errors = await evaluate_pairs(
         request,
         candidates,
         prior_events_by_id=prior,
         view_filters=view_filters_of(request),
     )
+    errors = [*stored_errors, *parse_errors]
+    if candidates and not evaluations and parse_errors:
+        raise RuntimeError("; ".join(parse_errors))
     rows = await _store_screen_results(db, request, evaluations)
     logger.info("screen complete request_id=%s count=%s", request.id, len(candidate_ids))
     return screening_summary(
         candidate_ids=candidate_ids,
         rows=rows,
-        errors=stored_errors,
+        errors=errors,
         request=request,
     )
 
@@ -228,12 +231,15 @@ async def evaluate_candidate_ids(
     if not candidates:
         return screening_summary(candidate_ids=[], rows=[], errors=errors, request=request)
     prior = await _prior_events_for(db, request.id, candidates)
-    evaluations = await evaluate_pairs(
+    evaluations, parse_errors = await evaluate_pairs(
         request,
         candidates,
         prior_events_by_id=prior,
         view_filters=view_filters_of(request),
     )
+    errors = [*errors, *parse_errors]
+    if candidates and not evaluations and parse_errors:
+        raise RuntimeError("; ".join(parse_errors))
     rows = await _store_screen_results(
         db, request, evaluations, promote_pending=True
     )

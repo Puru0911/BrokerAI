@@ -65,6 +65,8 @@ def _tool_status(result: str) -> str:
 
 _PROCESS_LEAK_MARKERS = (
     "save_request",
+    "update_search_brief",
+    "update_request_details",
     "index_request",
     "search_counterparties",
     "evaluate_pair",
@@ -164,19 +166,23 @@ async def maybe_queue_clarify_followup(ctx: ToolContext) -> None:
     job = ctx.background_job or {}
     if job.get("kind") == "clarify":
         return
-    from app.services.request_jobs import JOB_CLARIFY, enqueue_request_job
+    from app.services.request_jobs import JOB_CLARIFY, JobRetryBlocked, enqueue_request_job
     from app.services.suggestions import all_pending_questions, list_suggestions
 
     rows = await list_suggestions(ctx.db, ctx.request.id)
     if not all_pending_questions(rows):
         return
-    follow = await enqueue_request_job(
-        ctx.db,
-        kind=JOB_CLARIFY,
-        request=ctx.request,
-        session_id=ctx.session.id,
-        user_id=ctx.profile.id,
-    )
+    try:
+        follow = await enqueue_request_job(
+            ctx.db,
+            kind=JOB_CLARIFY,
+            request=ctx.request,
+            session_id=ctx.session.id,
+            user_id=ctx.profile.id,
+            ctx=ctx,
+        )
+    except JobRetryBlocked:
+        return
     ctx.queued_jobs.append(follow.id)
     logger.info(
         "clarify follow-up queued session=%s job_id=%s",

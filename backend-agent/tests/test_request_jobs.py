@@ -16,8 +16,8 @@ from app.services.request_jobs import (
     JOB_EVALUATE,
     JOB_INDEX,
     JOB_SCREEN,
-    _is_parse_failure,
-    _run_kind_with_parse_retry,
+    JobRetryBlocked,
+    _run_kind,
     enqueue_followup_screen,
     enqueue_request_job,
     job_packet,
@@ -162,19 +162,112 @@ async def test_evaluate_pair_stores_view_filters_without_clearing_index() -> Non
 
 
 @pytest.mark.asyncio
-async def test_update_request_clears_view_filters() -> None:
+async def test_update_search_brief_clears_view_filters() -> None:
     source = _request("req-aaaaaa", "user-a", indexed=True)
     source.view_filters = ["Kharadi"]
+    source.details = {"objective": "Need a designer", "hometown": "Pune"}
     ctx = _ctx(source)
     with patch(
         "app.agents.tools.request_tools.generate_request_copy",
         AsyncMock(return_value=("Title", "Summary")),
     ):
-        tool = next(item for item in build_request_tools(ctx) if item.name == "update_request")
-        result = json.loads(await tool.ainvoke({"location": "Pune"}))
+        tool = next(item for item in build_request_tools(ctx) if item.name == "update_search_brief")
+        result = json.loads(await tool.ainvoke({"domain": "hiring"}))
     assert result["ok"] is True
     assert source.view_filters == []
     assert source.indexed_at is None
+    assert source.details["hometown"] == "Pune"
+    assert source.details["domain"] == "hiring"
+
+
+@pytest.mark.asyncio
+async def test_update_request_details_does_not_clear_index() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    indexed_at = source.indexed_at
+    source.details = {"objective": "Need a designer", "domain": "hiring"}
+    source.view_filters = ["Kharadi"]
+    ctx = _ctx(source)
+    tool = next(item for item in build_request_tools(ctx) if item.name == "update_request_details")
+    result = json.loads(await tool.ainvoke({"fields": {"rate": "$45/hour"}}))
+    assert result["ok"] is True
+    assert source.indexed_at == indexed_at
+    assert source.view_filters == ["Kharadi"]
+    assert source.details["rate"] == "$45/hour"
+    assert source.details["objective"] == "Need a designer"
+
+
+@pytest.mark.asyncio
+async def test_update_request_details_refuses_search_core_keys() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    indexed_at = source.indexed_at
+    source.details = {"objective": "Need a designer", "domain": "hiring"}
+    ctx = _ctx(source)
+    tool = next(item for item in build_request_tools(ctx) if item.name == "update_request_details")
+    result = json.loads(await tool.ainvoke({"fields": {"objective": "Need a PM"}}))
+    assert result["ok"] is False
+    assert "update_search_brief" in result["error"]
+    assert source.indexed_at == indexed_at
+    assert source.details["objective"] == "Need a designer"
+
+
+@pytest.mark.asyncio
+async def test_save_request_preserves_extra_keys() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    source.details = {
+        "objective": "Need a designer",
+        "domain": "hiring",
+        "rate": "$45/hour",
+        "hometown": "Pune",
+    }
+    ctx = _ctx(source)
+    with patch(
+        "app.agents.tools.request_tools.generate_request_copy",
+        AsyncMock(return_value=("Title", "Summary")),
+    ):
+        tool = next(item for item in build_request_tools(ctx) if item.name == "save_request")
+        result = json.loads(
+            await tool.ainvoke(
+                {
+                    "objective": "Need a senior designer",
+                    "domain": "hiring",
+                    "hard_constraints": ["remote"],
+                    "soft_preferences": [],
+                    "freeform_notes": "SaaS",
+                }
+            )
+        )
+    assert result["ok"] is True
+    assert source.indexed_at is None
+    assert source.details["rate"] == "$45/hour"
+    assert source.details["hometown"] == "Pune"
+    assert source.details["objective"] == "Need a senior designer"
+
+
+@pytest.mark.asyncio
+async def test_evaluate_job_runs_when_brief_is_not_indexed() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=False)
+    job = SimpleNamespace(kind=JOB_EVALUATE, payload={"candidate_ids": ["cand-1"]})
+    with (
+        patch(
+            "app.services.request_jobs.resolve_evaluate_ids",
+            AsyncMock(return_value=["cand-1"]),
+        ),
+        patch(
+            "app.services.request_jobs.evaluate_candidate_ids",
+            AsyncMock(return_value={"count": 1}),
+        ) as eval_ids,
+    ):
+        payload = await _run_kind(AsyncMock(), job, source)
+    assert payload == {"count": 1}
+    eval_ids.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_screen_job_requires_index() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=False)
+    job = SimpleNamespace(kind=JOB_SCREEN, payload={})
+    with pytest.raises(RuntimeError, match="not indexed"):
+        await _run_kind(AsyncMock(), job, source)
 
 
 def test_search_tools_do_not_include_search_again() -> None:
@@ -222,7 +315,28 @@ def test_job_packet_has_ids_not_briefs() -> None:
     assert packet["job_id"] == "job-1"
     assert packet["candidate_ids"] == ["cand-1"]
     assert packet["count"] == 1
+    assert packet["error"] is None
+    assert packet["errors"] == []
+    assert packet["retry_allowed"] is True
     assert "objective" not in packet
+
+
+def test_job_packet_exposes_clipped_error_when_failed() -> None:
+    job = SimpleNamespace(
+        id="job-fail",
+        kind=JOB_EVALUATE,
+        status="failed",
+        payload={
+            "candidate_ids": ["cand-1"],
+            "error": "Failed to parse PairEvaluation from completion " + ("x" * 500),
+        },
+    )
+    packet = job_packet(job)
+    assert packet["retry_allowed"] is False
+    assert packet["error"] is not None
+    assert packet["error"].startswith("Failed to parse PairEvaluation")
+    assert len(packet["error"]) <= 400
+    assert packet["error"].endswith("...")
 
 
 def test_schedule_request_jobs_does_not_run_inline() -> None:
@@ -255,28 +369,113 @@ def test_job_packet_includes_screen_case_ids() -> None:
     assert packet["possible_match"] == ["cand-2"]
     assert packet["pending_clarify"] == ["cand-3"]
     assert packet["pending_questions"] == ["Can you relocate?"]
+    assert packet["errors"] == []
 
 
-def test_parse_failure_detects_schema_echo() -> None:
-    assert _is_parse_failure(ValueError("Failed to parse PairEvaluation from completion"))
-    assert not _is_parse_failure(RuntimeError("This brief is not indexed."))
+def test_job_packet_includes_pair_errors_when_done() -> None:
+    job = SimpleNamespace(
+        id="job-3",
+        kind=JOB_SCREEN,
+        status="done",
+        payload={
+            "candidate_ids": ["cand-1", "cand-2"],
+            "strong_match": ["cand-1"],
+            "errors": ["cand-2: Failed to parse PairEvaluation from completion {}"],
+        },
+    )
+    packet = job_packet(job)
+    assert packet["retry_allowed"] is True
+    assert packet["error"] is None
+    assert packet["errors"] == [
+        "cand-2: Failed to parse PairEvaluation from completion {}",
+    ]
 
 
 @pytest.mark.asyncio
-async def test_silent_parse_retry_reruns_once() -> None:
-    calls = {"n": 0}
+async def test_enqueue_refuses_same_kind_after_failed_request_ready() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    ctx = _ctx(source)
+    ctx.trigger = "request_ready"
+    ctx.background_job = {"kind": JOB_EVALUATE, "status": "failed", "retry_allowed": False}
+    db = AsyncMock()
+    db.add = MagicMock()
+    with pytest.raises(JobRetryBlocked):
+        await enqueue_request_job(
+            db,
+            kind=JOB_EVALUATE,
+            request=source,
+            session_id=source.session_id,
+            user_id=source.user_id,
+            ctx=ctx,
+        )
+    db.add.assert_not_called()
 
-    async def fake_run(*_args, **_kwargs):
-        calls["n"] += 1
-        if calls["n"] == 1:
-            raise ValueError("Failed to parse PairEvaluation from completion")
-        return {"count": 1, "strong_match": ["cand-1"]}
 
-    job = SimpleNamespace(id="job-screen", kind=JOB_SCREEN)
-    with patch("app.services.request_jobs._run_kind", fake_run):
-        payload = await _run_kind_with_parse_retry(AsyncMock(), job, MagicMock())
-    assert calls["n"] == 2
-    assert payload["strong_match"] == ["cand-1"]
+@pytest.mark.asyncio
+async def test_enqueue_allows_same_kind_on_user_message() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    ctx = _ctx(source)
+    ctx.trigger = "user_message"
+    ctx.background_job = {"kind": JOB_EVALUATE, "status": "failed"}
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.flush = AsyncMock()
+    with (
+        patch("app.services.request_jobs._fail_open_jobs", AsyncMock()),
+        patch("app.services.request_jobs._open_job", AsyncMock(return_value=None)),
+    ):
+        job = await enqueue_request_job(
+            db,
+            kind=JOB_EVALUATE,
+            request=source,
+            session_id=source.session_id,
+            user_id=source.user_id,
+            ctx=ctx,
+        )
+    added = db.add.call_args[0][0]
+    assert added is job
+    assert added.kind == JOB_EVALUATE
+
+
+@pytest.mark.asyncio
+async def test_enqueue_allows_other_kind_on_failed_request_ready() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    ctx = _ctx(source)
+    ctx.trigger = "request_ready"
+    ctx.background_job = {"kind": JOB_SCREEN, "status": "failed"}
+    db = AsyncMock()
+    db.add = MagicMock()
+    db.flush = AsyncMock()
+    with (
+        patch("app.services.request_jobs._fail_open_jobs", AsyncMock()),
+        patch("app.services.request_jobs._open_job", AsyncMock(return_value=None)),
+    ):
+        job = await enqueue_request_job(
+            db,
+            kind=JOB_EVALUATE,
+            request=source,
+            session_id=source.session_id,
+            user_id=source.user_id,
+            ctx=ctx,
+        )
+    assert db.add.call_args[0][0] is job
+
+
+@pytest.mark.asyncio
+async def test_evaluate_pair_tool_refuses_same_kind_retry() -> None:
+    source = _request("req-aaaaaa", "user-a", indexed=True)
+    ctx = _ctx(source)
+    ctx.trigger = "request_ready"
+    ctx.background_job = {"kind": JOB_EVALUATE, "status": "failed"}
+    with patch(
+        "app.agents.tools.search_tools.resolve_evaluate_ids",
+        AsyncMock(return_value=["cand-1"]),
+    ):
+        tool = next(item for item in build_search_tools(ctx) if item.name == "evaluate_pair")
+        result = json.loads(await tool.ainvoke({"candidate_ids": ["cand-1"]}))
+    assert result["ok"] is False
+    assert "already failed" in result["error"]
+    assert ctx.queued_jobs == []
 
 
 @pytest.mark.asyncio

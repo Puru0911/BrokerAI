@@ -23,7 +23,7 @@ function LoginContent() {
   const [status, setStatus] = useState<string | null>(null)
   const [emailLoading, setEmailLoading] = useState(false)
   const [googleLoading, setGoogleLoading] = useState(false)
-  const showGoogle = process.env.NODE_ENV !== "production"
+  const showGoogle = true
   const busy = emailLoading || googleLoading
 
   async function signInWithGoogle() {

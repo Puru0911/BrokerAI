@@ -72,7 +72,13 @@ def match_lane_label(
 ) -> str:
     """Compact tab title for a counterpart. Prefer living brief over the session title dump."""
     living = living_request_dict(other.details)
-    location = _short_place(redact_identity((living.get("location") or "").strip()))
+    raw_location = living.get("location") or ""
+    if isinstance(raw_location, list):
+        raw_location = next(
+            (str(item).strip() for item in raw_location if str(item).strip()),
+            "",
+        )
+    location = _short_place(redact_identity(str(raw_location).strip()))
     domain = redact_identity((living.get("domain") or "").strip())
     objective = redact_identity((living.get("objective") or "").strip())
     head = _display_domain(domain) if domain else _short_phrase(objective, _HEAD_LIMIT)

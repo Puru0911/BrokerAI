@@ -16,7 +16,7 @@ from app.llm.client import (
     llm_configuration_error,
 )
 from app.rag.store import get_vector_store
-from app.services.living_request import living_request_dict
+from app.services.living_request import extra_fields_of, search_brief_dict
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +30,7 @@ class SemanticRetrievalPlan(BaseModel):
 
 
 def living_input(request: AgentRequest) -> dict[str, Any]:
-    return living_request_dict(request.details)
+    return search_brief_dict(request.details)
 
 
 def _fallback_profile(request: AgentRequest) -> str:
@@ -46,7 +46,7 @@ def _fallback_profile(request: AgentRequest) -> str:
         + "\n".join(f"- {item}" for item in constraints)
         + "\nSOFT PREFERENCES:\n"
         + "\n".join(f"- {item}" for item in preferences)
-        + f"\nKEYWORDS: {living['domain']}, {living['location']}, {living['objective']}"
+        + f"\nKEYWORDS: {living['domain']}, {living['objective']}"
     )
 
 
@@ -85,12 +85,14 @@ async def index_request(request: AgentRequest) -> str:
     }
     request.details = details
     living = living_input(request)
+    extras = extra_fields_of(details)
+    location = extras.get("location")
     await asyncio.to_thread(
         get_vector_store().upsert_request,
         request,
         document,
         living.get("domain") or None,
-        living.get("location") or None,
+        location if isinstance(location, str) else None,
     )
     request.indexed_at = datetime.now(UTC)
     logger.info("request indexed request_id=%s session_id=%s", request.id, request.session_id)

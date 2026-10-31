@@ -21,6 +21,11 @@ primary_region = "nrt"
   VAPID_KEY_PATH = "/data/vapid.json"
   LLM_PROVIDER = "openrouter"
   OPENROUTER_BASE_URL = "https://openrouter.ai/api/v1"
+  LLM_MODEL = "deepseek/deepseek-v4.1-flash-1017"
+  LLM_REQUEST_TIMEOUT_SECONDS = "30"
+  OPENROUTER_REASONING_ENABLED = "true"
+  OPENROUTER_REASONING_EFFORT = "medium"
+  OPENROUTER_REASONING_EXCLUDE = "false"
   AGENT_MAX_TOOL_STEPS = "8"
   AGENT_MODEL_INVOKE_RETRIES = "3"
   MATCH_TIMEOUT_HOURS = "48"
@@ -61,6 +66,6 @@ primary_region = "nrt"
   destination = "/data"
 
 [[vm]]
-  memory = "1gb"
+  memory = "2gb"
   cpu_kind = "shared"
-  cpus = 1
+  cpus = 2

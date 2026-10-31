@@ -21,6 +21,7 @@ from app.services.privacy import json_result
 from app.services.request_jobs import (
     JOB_EVALUATE,
     JOB_SCREEN,
+    JobRetryBlocked,
     enqueue_request_job,
     resolve_evaluate_ids,
 )
@@ -96,14 +97,18 @@ async def _enqueue_screen(ctx: ToolContext, *, replace: bool = False) -> str:
     if ctx.request.indexed_at is None:
         logger.info("search blocked session=%s request_id=%s reason=not_indexed", ctx.session.id, ctx.request.id)
         return json_result(ok=False, error="This brief is not indexed.")
-    job = await enqueue_request_job(
-        ctx.db,
-        kind=JOB_SCREEN,
-        request=ctx.request,
-        session_id=ctx.session.id,
-        user_id=ctx.profile.id,
-        replace=replace,
-    )
+    try:
+        job = await enqueue_request_job(
+            ctx.db,
+            kind=JOB_SCREEN,
+            request=ctx.request,
+            session_id=ctx.session.id,
+            user_id=ctx.profile.id,
+            replace=replace,
+            ctx=ctx,
+        )
+    except JobRetryBlocked as exc:
+        return json_result(ok=False, error=str(exc))
     ctx.queued_jobs.append(job.id)
     ctx.searched_this_turn = True
     logger.info(
@@ -134,19 +139,23 @@ def build_search_tools(ctx: ToolContext) -> list[BaseTool]:
     async def evaluate_pair_tool(args: EvaluatePairArgs) -> str:
         if ctx.request is None:
             return json_result(ok=False, error="No brief is saved for this session.")
-        if "filters" in args.model_fields_set and args.filters is not None:
-            ctx.request.view_filters = normalize_view_filters(args.filters)
         ids = await resolve_evaluate_ids(ctx.db, ctx.request.id, args.candidate_ids)
         if not ids:
             return json_result(ok=False, error="No candidates could be screened.")
-        job = await enqueue_request_job(
-            ctx.db,
-            kind=JOB_EVALUATE,
-            request=ctx.request,
-            session_id=ctx.session.id,
-            user_id=ctx.profile.id,
-            candidate_ids=ids,
-        )
+        try:
+            job = await enqueue_request_job(
+                ctx.db,
+                kind=JOB_EVALUATE,
+                request=ctx.request,
+                session_id=ctx.session.id,
+                user_id=ctx.profile.id,
+                candidate_ids=ids,
+                ctx=ctx,
+            )
+        except JobRetryBlocked as exc:
+            return json_result(ok=False, error=str(exc))
+        if "filters" in args.model_fields_set and args.filters is not None:
+            ctx.request.view_filters = normalize_view_filters(args.filters)
         ctx.queued_jobs.append(job.id)
         logger.info(
             "evaluate_pair queued session=%s job_id=%s count=%s filters=%s",

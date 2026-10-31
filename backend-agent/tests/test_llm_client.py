@@ -1,17 +1,23 @@
 from __future__ import annotations
 
+import json
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from app.core.config import settings
 from app.llm.client import (
+    STRUCTURED_INSTANCE_HINT,
     build_broker_chat_model,
     build_chat_model,
     groq_model_uses_reasoning,
     invoke_structured_model,
     invoke_text_model,
     openrouter_reasoning_config,
+    parse_structured_output,
+    required_instance_fields,
+    structured_retry_instruction,
+    unwrap_schema_echo,
 )
 
 
@@ -234,6 +240,10 @@ async def test_invoke_structured_model_keeps_reasoning(
     assert "Mumbai" in plan.query_text
     kwargs = openrouter_cls.call_args.kwargs
     assert kwargs["reasoning"]["effort"] == "medium"
+    human = fake.ainvoke.await_args.args[0][1].content
+    assert STRUCTURED_INSTANCE_HINT in human
+    assert "The output should be formatted as a JSON instance" not in human
+    assert "format_instructions" not in human.lower()
 
 
 @pytest.mark.asyncio
@@ -336,3 +346,222 @@ def test_build_chat_model_gemini_still_uses_chat_openai(
     groq_cls.assert_not_called()
     openrouter_cls.assert_not_called()
     assert openai_cls.call_args.kwargs["model"] == "gemini-2.5-flash"
+
+
+def test_unwrap_schema_echo_lifts_const_values() -> None:
+    payload = {
+        "properties": {
+            "verdict": {"const": "no_match", "title": "Verdict", "type": "string"},
+            "score": {"const": 5, "title": "Score", "type": "integer"},
+            "matched": ["Both in the same domain"],
+            "recommended_action": "skip",
+            "rationale": "Same-side pair.",
+            "negotiation_room": False,
+        }
+    }
+    lifted = unwrap_schema_echo(payload)
+    assert lifted["verdict"] == "no_match"
+    assert lifted["score"] == 5
+    assert lifted["recommended_action"] == "skip"
+    assert lifted["matched"] == ["Both in the same domain"]
+    assert "properties" not in lifted
+
+
+def test_parse_structured_output_salvages_schema_echo() -> None:
+    from app.services.evaluate import PairEvaluation
+
+    raw = json.dumps(
+        {
+            "properties": {
+                "verdict": {"const": "no_match", "title": "Verdict", "type": "string"},
+                "score": {"const": 5, "title": "Score", "type": "integer"},
+                "matched": ["Both professionals"],
+                "mismatched": [],
+                "missing_info": [],
+                "risk_flags": [],
+                "negotiation_room": False,
+                "recommended_action": "skip",
+                "clarifying_question": "",
+                "clarifying_questions": [],
+                "next_questions": [],
+                "rationale": "Same-side pair.",
+                "source_relative_brief": "",
+            }
+        }
+    )
+    evaluation = parse_structured_output(PairEvaluation, raw)
+    assert evaluation.verdict == "no_match"
+    assert evaluation.score == 5
+    assert evaluation.recommended_action == "skip"
+
+
+def test_parse_structured_output_rejects_pure_schema() -> None:
+    from app.services.evaluate import PairEvaluation
+
+    raw = json.dumps(
+        {
+            "properties": {
+                "verdict": {
+                    "title": "Verdict",
+                    "type": "string",
+                    "enum": ["strong_match", "possible_match", "weak_match", "no_match"],
+                },
+                "score": {"title": "Score", "type": "integer"},
+                "recommended_action": {
+                    "title": "Recommended Action",
+                    "enum": ["open_match", "skip"],
+                    "type": "string",
+                },
+            },
+            "required": ["verdict", "score", "recommended_action"],
+        }
+    )
+    with pytest.raises(ValueError, match="Failed to parse PairEvaluation"):
+        parse_structured_output(PairEvaluation, raw)
+
+
+def test_parse_structured_output_keeps_a_filled_instance() -> None:
+    from app.services.evaluate import PairEvaluation
+
+    evaluation = parse_structured_output(
+        PairEvaluation,
+        json.dumps(
+            {
+                "verdict": "possible_match",
+                "score": 70,
+                "recommended_action": "ask_clarifying_question",
+                "clarifying_question": "Can you relocate?",
+            }
+        ),
+    )
+    assert evaluation.verdict == "possible_match"
+    assert evaluation.clarifying_question == "Can you relocate?"
+
+
+def test_required_instance_fields_lists_pair_keys() -> None:
+    from app.services.evaluate import PairEvaluation
+
+    required = required_instance_fields(PairEvaluation)
+    assert "verdict" in required
+    assert "score" in required
+    assert "recommended_action" in required
+
+
+def test_structured_retry_instruction_includes_output_error_and_keys() -> None:
+    from app.services.evaluate import PairEvaluation
+
+    instruction = structured_retry_instruction(
+        PairEvaluation,
+        "{}",
+        ValueError(
+            "Failed to parse PairEvaluation from completion {}. Got: 3 validation errors"
+        ),
+    )
+    assert "Previous output:" in instruction
+    assert "{}" in instruction
+    assert "3 validation errors" in instruction
+    assert "Required keys: verdict, score, recommended_action." in instruction
+    assert "Do not return a JSON Schema." in instruction
+
+
+@pytest.mark.asyncio
+async def test_invoke_structured_model_retries_parse_with_correction(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openrouter")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(settings, "LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    monkeypatch.setattr(settings, "OPENROUTER_REASONING_ENABLED", True)
+
+    from pydantic import BaseModel, Field
+
+    class Plan(BaseModel):
+        query_text: str = Field(min_length=20)
+
+    fake = MagicMock()
+    fake.bind.return_value = fake
+    fake.ainvoke = AsyncMock(
+        side_effect=[
+            MagicMock(content="{}"),
+            MagicMock(
+                content='{"query_text": "A woman in Mumbai looking for casual dating nearby."}'
+            ),
+        ]
+    )
+    with patch("app.llm.client.ChatOpenRouter", return_value=fake):
+        plan = await invoke_structured_model(
+            parser_model=Plan,
+            system_prompt="Return JSON.",
+            human_payload={"objective": "date"},
+            temperature=0.1,
+        )
+
+    assert "Mumbai" in plan.query_text
+    assert fake.ainvoke.await_count == 2
+    first = fake.ainvoke.await_args_list[0].args[0][1].content
+    second = fake.ainvoke.await_args_list[1].args[0][1].content
+    assert STRUCTURED_INSTANCE_HINT in first
+    assert "Previous output:" not in first
+    assert "Previous output:" in second
+    assert "Required keys: query_text." in second
+    assert "Failed to parse Plan" in second
+
+
+@pytest.mark.asyncio
+async def test_invoke_structured_model_does_not_retry_provider_errors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openrouter")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(settings, "LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    monkeypatch.setattr(settings, "OPENROUTER_REASONING_ENABLED", False)
+
+    from pydantic import BaseModel
+
+    class Plan(BaseModel):
+        query_text: str
+
+    fake = MagicMock()
+    fake.bind.return_value = fake
+    fake.ainvoke = AsyncMock(side_effect=RuntimeError("provider unavailable"))
+    with (
+        patch("app.llm.client.ChatOpenRouter", return_value=fake),
+        pytest.raises(RuntimeError, match="provider unavailable"),
+    ):
+        await invoke_structured_model(
+            parser_model=Plan,
+            system_prompt="Return JSON.",
+            human_payload={"objective": "date"},
+            temperature=0.1,
+        )
+    assert fake.ainvoke.await_count == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_structured_model_reraises_after_two_parse_failures(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(settings, "LLM_PROVIDER", "openrouter")
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "sk-or-test")
+    monkeypatch.setattr(settings, "LLM_MODEL", "nvidia/nemotron-3-ultra-550b-a55b:free")
+    monkeypatch.setattr(settings, "OPENROUTER_REASONING_ENABLED", False)
+
+    from pydantic import BaseModel, Field
+
+    class Plan(BaseModel):
+        query_text: str = Field(min_length=20)
+
+    fake = MagicMock()
+    fake.bind.return_value = fake
+    fake.ainvoke = AsyncMock(return_value=MagicMock(content="{}"))
+    with (
+        patch("app.llm.client.ChatOpenRouter", return_value=fake),
+        pytest.raises(ValueError, match="Failed to parse Plan"),
+    ):
+        await invoke_structured_model(
+            parser_model=Plan,
+            system_prompt="Return JSON.",
+            human_payload={"objective": "date"},
+            temperature=0.1,
+        )
+    assert fake.ainvoke.await_count == 2

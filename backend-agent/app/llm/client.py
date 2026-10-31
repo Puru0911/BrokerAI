@@ -1,18 +1,21 @@
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 from langchain_core.messages import HumanMessage, SystemMessage
-from langchain_core.output_parsers import PydanticOutputParser
 from langchain_groq import ChatGroq
 from langchain_openai import ChatOpenAI
 from langchain_openrouter import ChatOpenRouter
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from app.core.config import settings
+from app.core.logging import clip
+
+logger = logging.getLogger(__name__)
 
 # Groq reasoning models emit native XML tool calls inside the think stream unless
 # reasoning_format=parsed splits thinking into message.reasoning and tools into
@@ -28,6 +31,142 @@ _OPENROUTER_PROVIDER = {
     "require_parameters": True,
     "allow_fallbacks": True,
 }
+
+_SCHEMA_ENVELOPE_KEYS = {
+    "properties",
+    "required",
+    "title",
+    "type",
+    "$schema",
+    "$defs",
+    "definitions",
+    "additionalProperties",
+    "description",
+}
+_SCHEMA_FIELD_KEYS = {
+    "title",
+    "type",
+    "enum",
+    "const",
+    "default",
+    "description",
+    "items",
+    "minimum",
+    "maximum",
+    "minLength",
+    "maxLength",
+    "anyOf",
+    "allOf",
+    "oneOf",
+    "properties",
+    "required",
+    "additionalProperties",
+    "$ref",
+    "format",
+}
+
+STRUCTURED_INSTANCE_HINT = (
+    "Return only a filled JSON object of values. Do not return a JSON Schema. "
+    "Do not wrap fields in properties, title, type, enum, or const."
+)
+_STRUCTURED_PARSE_ATTEMPTS = 2
+_PREVIOUS_OUTPUT_MAX = 800
+_PARSE_ERROR_MAX = 600
+
+
+def _lift_schema_value(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_lift_schema_value(item) for item in value]
+    if not isinstance(value, dict):
+        return value
+    if "const" in value:
+        return value["const"]
+    keys = set(value.keys())
+    if keys <= _SCHEMA_FIELD_KEYS:
+        if "default" in value:
+            return value["default"]
+        if "properties" in value:
+            return unwrap_schema_echo(value)
+        return None
+    return {key: _lift_schema_value(item) for key, item in value.items()}
+
+
+def unwrap_schema_echo(payload: Any) -> Any:
+    """Lift a JSON-Schema-shaped object into a filled instance when possible."""
+    if not isinstance(payload, dict):
+        return payload
+    inner = payload.get("properties")
+    if isinstance(inner, dict) and not any(
+        key in payload and key not in _SCHEMA_ENVELOPE_KEYS for key in inner
+    ):
+        lifted = {key: _lift_schema_value(value) for key, value in inner.items()}
+    else:
+        lifted = {key: _lift_schema_value(value) for key, value in payload.items()}
+        lifted.pop("properties", None)
+        lifted.pop("required", None)
+    return {key: value for key, value in lifted.items() if value is not None}
+
+
+def parse_structured_output(parser_model: type[BaseModel], text: str) -> Any:
+    raw = _strip_fences(text)
+    try:
+        payload = json.loads(raw) if raw else {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"Invalid json output: {raw}") from exc
+    payload = unwrap_schema_echo(payload)
+    try:
+        return parser_model.model_validate(payload)
+    except ValidationError as exc:
+        raise ValueError(
+            f"Failed to parse {parser_model.__name__} from completion {raw}. Got: {exc}"
+        ) from exc
+
+
+def required_instance_fields(parser_model: type[BaseModel]) -> list[str]:
+    return [name for name, field in parser_model.model_fields.items() if field.is_required()]
+
+
+def structured_retry_instruction(
+    parser_model: type[BaseModel],
+    previous: str,
+    error: BaseException,
+) -> str:
+    prev = (previous or "").strip() or "(empty)"
+    if len(prev) > _PREVIOUS_OUTPUT_MAX:
+        prev = prev[: _PREVIOUS_OUTPUT_MAX - 3].rstrip() + "..."
+    err = str(error or "").strip() or "unknown parse error"
+    if len(err) > _PARSE_ERROR_MAX:
+        err = err[: _PARSE_ERROR_MAX - 3].rstrip() + "..."
+    required = required_instance_fields(parser_model)
+    required_line = f"Required keys: {', '.join(required)}." if required else ""
+    return (
+        "The previous JSON did not match a filled instance.\n"
+        f"Previous output:\n{prev}\n"
+        f"Error:\n{err}\n"
+        f"{required_line}\n"
+        "Return a filled JSON object of values. Do not return a JSON Schema."
+    )
+
+
+def _structured_human(human_payload: dict[str, Any], correction: str = "") -> str:
+    text = (
+        "Context packet:\n"
+        f"{json.dumps(human_payload, ensure_ascii=False)}\n\n"
+        f"{STRUCTURED_INSTANCE_HINT}"
+    )
+    if correction.strip():
+        text = f"{text}\n\n{correction.strip()}"
+    return text
+
+
+def _message_content(result: Any) -> str:
+    content = result.content if hasattr(result, "content") else str(result)
+    if isinstance(content, list):
+        content = "\n".join(
+            block if isinstance(block, str) else str(block.get("text") or "")
+            for block in content
+        )
+    return str(content or "")
 
 
 @dataclass(frozen=True)
@@ -287,33 +426,40 @@ async def invoke_structured_model(
     max_tokens: int = 2000,
     use_reasoning: bool = True,
 ) -> Any:
-    """Call the chat model with a strict JSON / Pydantic contract."""
+    """Call the chat model with a strict JSON / Pydantic contract.
+
+    On parse failure, retry once with the previous output and the validation
+    error. Provider exceptions from ainvoke are not retried here.
+    """
     if not is_llm_configured():
         raise RuntimeError(llm_configuration_error())
 
-    parser = PydanticOutputParser(pydantic_object=parser_model)
     llm = build_chat_model(
         temperature=temperature,
         max_tokens=max_tokens,
         use_reasoning=use_reasoning,
     ).bind(response_format={"type": "json_object"})
-    result = await llm.ainvoke(
-        [
-            SystemMessage(content=system_prompt),
-            HumanMessage(
-                content=(
-                    "Context packet:\n"
-                    f"{json.dumps(human_payload, ensure_ascii=False)}\n\n"
-                    "Return JSON that matches the schema exactly:\n"
-                    f"{parser.get_format_instructions()}"
-                )
-            ),
-        ]
-    )
-    content = result.content if hasattr(result, "content") else str(result)
-    if isinstance(content, list):
-        content = "\n".join(
-            block if isinstance(block, str) else str(block.get("text") or "")
-            for block in content
+    correction = ""
+    last_error: BaseException | None = None
+    for attempt in range(_STRUCTURED_PARSE_ATTEMPTS):
+        result = await llm.ainvoke(
+            [
+                SystemMessage(content=system_prompt),
+                HumanMessage(content=_structured_human(human_payload, correction)),
+            ]
         )
-    return parser.parse(_strip_fences(str(content or "")))
+        previous = _message_content(result)
+        try:
+            return parse_structured_output(parser_model, previous)
+        except ValueError as exc:
+            last_error = exc
+            if attempt + 1 >= _STRUCTURED_PARSE_ATTEMPTS:
+                break
+            logger.warning(
+                "structured parse retry model=%s error=%s",
+                parser_model.__name__,
+                clip(str(exc), _PARSE_ERROR_MAX),
+            )
+            correction = structured_retry_instruction(parser_model, previous, exc)
+    assert last_error is not None
+    raise last_error
