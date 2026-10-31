@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from app.agents.prompts import REQUEST_COPY_PROMPT
 from app.core.config import settings
 from app.llm.client import invoke_structured_model, is_llm_configured
-from app.services.living_request import living_request_dict
+from app.services.living_request import search_brief_dict
 
 logger = logging.getLogger(__name__)
 
@@ -56,15 +56,15 @@ def _clip_title(title: str, fallback: str) -> str:
 
 
 def fallback_request_copy(details: dict[str, Any] | None) -> tuple[str, str]:
-    living = living_request_dict(details)
+    living = search_brief_dict(details)
     objective = living.get("objective") or ""
     return create_title(objective), create_summary(objective)
 
 
 async def generate_request_copy(details: dict[str, Any] | None) -> tuple[str, str]:
-    """LLM title and summary for a living brief, with a heuristic fallback."""
+    """LLM title and summary from the search brief, with a heuristic fallback."""
     fallback_title, fallback_summary = fallback_request_copy(details)
-    living = living_request_dict(details)
+    living = search_brief_dict(details)
     if not living.get("objective"):
         return fallback_title, fallback_summary
     if not is_llm_configured():

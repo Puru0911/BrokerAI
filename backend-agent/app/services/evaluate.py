@@ -1,14 +1,20 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
 from app.agents.prompts import PAIR_EVALUATOR_PROMPT
+from app.core.logging import clip
 from app.db.models import AgentRequest
 from app.llm.client import invoke_structured_model, is_llm_configured, llm_configuration_error
 from app.services.living_request import living_request_dict, normalize_view_filters
+
+logger = logging.getLogger(__name__)
+
+_PAIR_ERROR_MAX = 400
 
 RecommendedAction = Literal[
     "open_match",
@@ -97,21 +103,35 @@ async def evaluate_pairs(
     *,
     prior_events_by_id: dict[str, list[dict[str, Any]]] | None = None,
     view_filters: list[str] | None = None,
-) -> list[PairEvaluation]:
+) -> tuple[list[PairEvaluation], list[str]]:
     prior = prior_events_by_id or {}
     overlay = normalize_view_filters(view_filters)
     if not candidates:
-        return []
-    return list(
-        await asyncio.gather(
-            *[
-                evaluate_pair(
-                    source_request,
-                    candidate,
-                    prior_events=prior.get(candidate.id) or [],
-                    view_filters=overlay,
-                )
-                for candidate in candidates
-            ]
-        )
+        return [], []
+    results = await asyncio.gather(
+        *[
+            evaluate_pair(
+                source_request,
+                candidate,
+                prior_events=prior.get(candidate.id) or [],
+                view_filters=overlay,
+            )
+            for candidate in candidates
+        ],
+        return_exceptions=True,
     )
+    evaluations: list[PairEvaluation] = []
+    errors: list[str] = []
+    for candidate, result in zip(candidates, results, strict=True):
+        if isinstance(result, BaseException):
+            detail = clip(str(result), _PAIR_ERROR_MAX)
+            logger.warning(
+                "pair eval skipped candidate_id=%s error=%s",
+                candidate.id,
+                detail,
+            )
+            errors.append(f"{candidate.id}: {detail}")
+            continue
+        evaluations.append(result)
+    return evaluations, errors
+

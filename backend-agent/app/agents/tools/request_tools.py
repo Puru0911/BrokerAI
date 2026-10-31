@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import logging
-from typing import Annotated
+from typing import Annotated, Any
 
 from langchain_core.tools import BaseTool
 from pydantic import BaseModel, BeforeValidator, Field
@@ -11,15 +11,22 @@ from app.agents.prompts import (
     TOOL_GET_REQUEST_SNAPSHOT,
     TOOL_INDEX_REQUEST,
     TOOL_SAVE_REQUEST,
-    TOOL_UPDATE_REQUEST,
+    TOOL_UPDATE_REQUEST_DETAILS,
+    TOOL_UPDATE_SEARCH_BRIEF,
 )
 from app.agents.tool_call_repair import coerce_optional_str_list, coerce_str_list
 from app.agents.tools._common import make_tool
 from app.core.logging import clip
 from app.db.models import AgentRequest
-from app.services.living_request import apply_request_patch, living_request_from_model
+from app.services.living_request import (
+    apply_details_extra_patch,
+    apply_search_brief_patch,
+    extra_fields_of,
+    living_request_from_model,
+    search_brief_dict,
+)
 from app.services.privacy import json_result
-from app.services.request_jobs import JOB_INDEX, enqueue_request_job
+from app.services.request_jobs import JOB_INDEX, JobRetryBlocked, enqueue_request_job
 from app.services.titles import generate_request_copy
 from app.services.workflow import REQUEST_OPEN, get_session_request, open_match_count
 
@@ -39,35 +46,20 @@ class SaveRequestArgs(BaseModel):
         default_factory=list,
         description="Nice-to-haves that can be negotiated.",
     )
-    budget: str = Field(
-        default="",
-        max_length=240,
-        description="Money, rate, or exchange they named, if any.",
-    )
     domain: str = Field(
         default="",
         max_length=120,
         description="Short label for the kind of request.",
     )
-    location: str = Field(
-        default="",
-        max_length=160,
-        description="Place or region that matters, if they named one.",
-    )
-    timeline: str = Field(
-        default="",
-        max_length=160,
-        description="When they need this, if they said.",
-    )
     freeform_notes: str = Field(
         default="",
         max_length=2000,
-        description="Anything else that belongs on the brief.",
+        description="Short offer or who they are, for the search document.",
     )
 
 
-class UpdateRequestArgs(BaseModel):
-    """Fields to change on the saved brief. Omitted fields stay as they are."""
+class UpdateSearchBriefArgs(BaseModel):
+    """Fields to change on the search brief. Omitted fields stay as they are."""
 
     model_config = {"extra": "ignore"}
 
@@ -84,30 +76,24 @@ class UpdateRequestArgs(BaseModel):
         default=None,
         description="Replacement list of negotiable preferences.",
     )
-    budget: str | None = Field(
-        default=None,
-        max_length=240,
-        description="Updated money, rate, or exchange.",
-    )
     domain: str | None = Field(
         default=None,
         max_length=120,
         description="Updated short label for the kind of request.",
     )
-    location: str | None = Field(
-        default=None,
-        max_length=160,
-        description="Updated place or region.",
-    )
-    timeline: str | None = Field(
-        default=None,
-        max_length=160,
-        description="Updated timing.",
-    )
     freeform_notes: str | None = Field(
         default=None,
         max_length=2000,
-        description="Updated extra notes for the brief.",
+        description="Updated offer notes for the search document.",
+    )
+
+
+class UpdateRequestDetailsArgs(BaseModel):
+    fields: dict[str, Any] = Field(
+        description=(
+            "Named extras for this request: facts, answers, secondary constraints, "
+            "or background. Not the search brief. Values are text or a list of text."
+        ),
     )
 
 
@@ -118,17 +104,16 @@ class NoArgs(BaseModel):
 def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
     async def save_request(args: SaveRequestArgs) -> str:
         request = ctx.request or await get_session_request(ctx.db, ctx.session.id)
-        details = {
+        core = {
             "objective": args.objective.strip(),
             "hard_constraints": [item.strip() for item in args.hard_constraints if item.strip()],
             "soft_preferences": [item.strip() for item in args.soft_preferences if item.strip()],
-            "budget": args.budget.strip(),
             "domain": args.domain.strip(),
-            "location": args.location.strip(),
-            "timeline": args.timeline.strip(),
             "freeform_notes": args.freeform_notes.strip(),
         }
-        title, summary = await generate_request_copy(details)
+        extras = extra_fields_of(request.details) if request is not None else {}
+        details = {**core, **extras}
+        title, summary = await generate_request_copy(core)
         if request is None:
             request = AgentRequest(
                 session_id=ctx.session.id,
@@ -165,19 +150,19 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             request_id=request.id,
             living_request=living_request_from_model(request),
             searchable=False,
-            outcome="Brief saved. Not searchable until indexed.",
+            outcome="Search brief saved. Not searchable until indexed.",
         )
 
-    async def update_request(args: UpdateRequestArgs) -> str:
+    async def update_search_brief(args: UpdateSearchBriefArgs) -> str:
         request = ctx.request or await get_session_request(ctx.db, ctx.session.id)
         if request is None:
             return json_result(ok=False, error="No brief is saved for this session.")
         patch = args.model_dump(exclude_unset=True)
         if not patch:
             return json_result(ok=False, error="No fields to update.")
-        details = apply_request_patch(request.details, patch)
+        details = apply_search_brief_patch(request.details, patch)
         request.details = details
-        title, summary = await generate_request_copy(details)
+        title, summary = await generate_request_copy(search_brief_dict(details))
         request.title = title
         request.summary = summary
         ctx.session.title = title
@@ -189,7 +174,7 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
         request.view_filters = []
         ctx.request = request
         logger.info(
-            "update_request session=%s request_id=%s fields=%s",
+            "update_search_brief session=%s request_id=%s fields=%s",
             ctx.session.id,
             request.id,
             sorted(patch.keys()),
@@ -200,7 +185,45 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             living_request=living_request_from_model(request),
             updated_fields=sorted(patch.keys()),
             searchable=False,
-            outcome="Brief patched. Not searchable until indexed.",
+            outcome="Search brief patched. Not searchable until indexed.",
+        )
+
+    async def update_request_details(args: UpdateRequestDetailsArgs) -> str:
+        request = ctx.request or await get_session_request(ctx.db, ctx.session.id)
+        if request is None:
+            return json_result(ok=False, error="No brief is saved for this session.")
+        if not args.fields:
+            return json_result(ok=False, error="No fields to update.")
+        details, applied, refused = apply_details_extra_patch(request.details, args.fields)
+        if not applied:
+            return json_result(
+                ok=False,
+                error=(
+                    "Those keys belong on the search brief. "
+                    "Use update_search_brief for domain, objective, "
+                    "hard_constraints, soft_preferences, and freeform_notes."
+                    if refused
+                    else "No fields to update."
+                ),
+                refused_fields=refused,
+            )
+        request.details = details
+        ctx.request = request
+        logger.info(
+            "update_request_details session=%s request_id=%s fields=%s refused=%s",
+            ctx.session.id,
+            request.id,
+            applied,
+            refused,
+        )
+        return json_result(
+            ok=True,
+            request_id=request.id,
+            living_request=living_request_from_model(request),
+            updated_fields=applied,
+            refused_fields=refused,
+            searchable=request.indexed_at is not None,
+            outcome="Request details updated. Search index unchanged.",
         )
 
     async def index_current(_args: NoArgs) -> str:
@@ -208,13 +231,17 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
         if request is None:
             logger.info("index_request blocked session=%s reason=no_request", ctx.session.id)
             return json_result(ok=False, error="No brief is saved for this session.")
-        job = await enqueue_request_job(
-            ctx.db,
-            kind=JOB_INDEX,
-            request=request,
-            session_id=ctx.session.id,
-            user_id=ctx.profile.id,
-        )
+        try:
+            job = await enqueue_request_job(
+                ctx.db,
+                kind=JOB_INDEX,
+                request=request,
+                session_id=ctx.session.id,
+                user_id=ctx.profile.id,
+                ctx=ctx,
+            )
+        except JobRetryBlocked as exc:
+            return json_result(ok=False, error=str(exc))
         ctx.request = request
         ctx.queued_jobs.append(job.id)
         logger.info(
@@ -258,10 +285,16 @@ def build_request_tools(ctx: ToolContext) -> list[BaseTool]:
             handler=save_request,
         ),
         make_tool(
-            name="update_request",
-            description=TOOL_UPDATE_REQUEST,
-            args_model=UpdateRequestArgs,
-            handler=update_request,
+            name="update_search_brief",
+            description=TOOL_UPDATE_SEARCH_BRIEF,
+            args_model=UpdateSearchBriefArgs,
+            handler=update_search_brief,
+        ),
+        make_tool(
+            name="update_request_details",
+            description=TOOL_UPDATE_REQUEST_DETAILS,
+            args_model=UpdateRequestDetailsArgs,
+            handler=update_request_details,
         ),
         make_tool(
             name="index_request",

@@ -884,7 +884,7 @@ async def test_screen_request_reevals_stored_before_new_hits(
                 recommended_action="open_match",
                 candidate_id=fresh.id,
             ),
-        ]
+        ], []
 
     monkeypatch.setattr("app.services.screening.evaluate_pairs", fake_eval)
     monkeypatch.setattr(
@@ -894,3 +894,80 @@ async def test_screen_request_reevals_stored_before_new_hits(
     summary = await screen_request(AsyncMock(), source)
     assert seen == [[stored.id, fresh.id]]
     assert summary["candidate_ids"] == [stored.id, fresh.id]
+
+
+@pytest.mark.asyncio
+async def test_screen_request_keeps_scored_pairs_when_one_parse_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _request("req-aaaaaa", "user-a")
+    kept = _request("req-kepttt", "user-k")
+    failed = _request("req-failed", "user-f")
+    monkeypatch.setattr(
+        "app.services.screening.unpresented_reeval_ids",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.services.screening.load_candidates_by_id",
+        AsyncMock(return_value=([], [])),
+    )
+    monkeypatch.setattr(
+        "app.services.screening.retrieve_candidates",
+        AsyncMock(return_value=[(kept, 0.1), (failed, 0.2)]),
+    )
+    monkeypatch.setattr(
+        "app.services.screening._prior_events_for",
+        AsyncMock(return_value={}),
+    )
+
+    async def fake_eval(request, candidates, prior_events_by_id=None, view_filters=None):
+        return [
+            PairEvaluation(
+                verdict="strong_match",
+                score=90,
+                recommended_action="open_match",
+                candidate_id=kept.id,
+            )
+        ], [f"{failed.id}: Failed to parse PairEvaluation from completion {{}}"]
+
+    monkeypatch.setattr("app.services.screening.evaluate_pairs", fake_eval)
+    monkeypatch.setattr(
+        "app.services.screening.upsert_from_evaluations",
+        AsyncMock(return_value=[]),
+    )
+    summary = await screen_request(AsyncMock(), source)
+    assert summary["candidate_ids"] == [kept.id, failed.id]
+    assert summary["errors"] == [
+        f"{failed.id}: Failed to parse PairEvaluation from completion {{}}"
+    ]
+
+
+@pytest.mark.asyncio
+async def test_screen_request_fails_when_every_pair_parse_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    source = _request("req-aaaaaa", "user-a")
+    first = _request("req-firstt", "user-1")
+    monkeypatch.setattr(
+        "app.services.screening.unpresented_reeval_ids",
+        AsyncMock(return_value=[]),
+    )
+    monkeypatch.setattr(
+        "app.services.screening.load_candidates_by_id",
+        AsyncMock(return_value=([], [])),
+    )
+    monkeypatch.setattr(
+        "app.services.screening.retrieve_candidates",
+        AsyncMock(return_value=[(first, 0.1)]),
+    )
+    monkeypatch.setattr(
+        "app.services.screening._prior_events_for",
+        AsyncMock(return_value={}),
+    )
+
+    async def fake_eval(request, candidates, prior_events_by_id=None, view_filters=None):
+        return [], [f"{first.id}: Failed to parse PairEvaluation from completion {{}}"]
+
+    monkeypatch.setattr("app.services.screening.evaluate_pairs", fake_eval)
+    with pytest.raises(RuntimeError, match="Failed to parse PairEvaluation"):
+        await screen_request(AsyncMock(), source)

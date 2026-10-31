@@ -2,7 +2,7 @@
 
 This is the agentic BrokerAI backend. It is a new service, not a patch on `backend/`.
 
-The broker is one LangChain tool-calling agent with RAG. There is no graph router and no intake / matching / mediation pipeline. The same agent talks to every party. A match notebook (shared facts + outstanding question) is visible on both turns. `think` is a custom tool, not provider-native thinking. `update_request` patches a brief without rewriting it.
+The broker is one LangChain tool-calling agent with RAG. There is no graph router and no intake / matching / mediation pipeline. The same agent talks to every party. A match notebook (pair process + pair-only concessions) is visible on both turns. `think` is a custom tool, not provider-native thinking. `update_search_brief` patches the searchable core; `update_request_details` stores extras for evaluate and mediation without re-indexing.
 
 ## Run
 

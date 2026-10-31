@@ -1,6 +1,6 @@
 # BrokerAI — Project Context
 
-Last updated: 2026-10-25 (REQ-016 public landing and privacy pages)
+Last updated: 2026-10-27 (REQ-019 structured parse retry is per call)
 
 ## MVP Goal
 
@@ -32,20 +32,20 @@ The product backend is `backend-agent/`: one LangChain tool-calling agent, RAG o
 user message
   → FastAPI chat route
   → Broker Agent (ChatGroq / ChatOpenRouter / ChatOpenAI.bind_tools loop)
-       think / save_request / update_request / search_counterparties /
-       evaluate_pair / present_candidates / open_match / message_party /
-       update_notebook / close_match / accept_match / share_contacts
+       think / save_request / update_search_brief / update_request_details /
+       search_counterparties / evaluate_pair / present_candidates / open_match /
+       message_party / update_notebook / close_match / accept_match / share_contacts
   → Postgres + Chroma
   → reply to the current user (and optionally a named party via message_party)
 ```
 
-One agent talks to every party. Screening is one-sided: a background pipeline indexes the brief, searches, and runs `evaluate_pairs` (up to `MAX_PAIR_PER_REQUEST`, default 3). Results are stored on `agent_suggested_matches` for **this request only**: `strong_match` (Strong fit cards), `possible_match` (Close fit cards: what fits vs still open), `pending_clarify` (this-user questions, no card), or skip. The counterpart never sees that evaluation. Cards appear on Your request as Interested/Skip (`present_candidates`), brief-only with no photos. A match lane exists only after Interested. Close-fit Interested then asks the other person on that match lane. Open matches are uncapped. Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus only; request-lane packets include `suggested_matches`). The model does not receive a roster of other live matches. `update_request` always patches the shared living brief, including from a match lane when this person adds a detail that applies beyond that pair. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
+One agent talks to every party. Screening is one-sided: a background pipeline indexes the brief, searches, and runs `evaluate_pairs` (up to `MAX_PAIR_PER_REQUEST`, default 3). Results are stored on `agent_suggested_matches` for **this request only**: `strong_match` (Strong fit cards), `possible_match` (Close fit cards: what fits vs still open), `pending_clarify` (this-user questions, no card), or skip. The counterpart never sees that evaluation. Cards appear on Your request as Interested/Skip (`present_candidates`), brief-only with no photos. A match lane exists only after Interested. Close-fit Interested then asks the other person on that match lane. Open matches are uncapped. Isolation is **match lanes**, not a second agent: `agent_messages.match_id` is null for the request/brief lane and set for that pair. Each turn sets `focus_match_id`; history and the context packet are scoped to that lane (`open_matches` = full snapshot of the focus only; request-lane packets include `suggested_matches`). The model does not receive a roster of other live matches. `update_search_brief` patches the five-key search core (who to retrieve) and clears the index. `update_request_details` adds named extras on the same `details` blob for evaluate and mediation; it does not re-index. Pair-specific terms stay in the match notebook. `SESSION_ROLE` follows the focused match (request lane is always source).
 
 Do not split this into intake vs mediation agents. The product is one broker with the full tool set on every turn. Parallelism already exists as fire-and-forget `match_context` turns on the other party's matching lane.
 
-Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. `index_request` starts a background pipeline (index, then search and pair evaluation). The broker wakes once when that pipeline finishes. `search_counterparties` starts the search-and-screen job when the brief is already indexed. Pair evaluation also applies request-lane `view_filters` set by `evaluate_pair`. The agent replies after starting the work. `message_party` queues a **separate** broker turn after this request commits, on the other party's **match lane** only. It is refused until Interested has opened a match. Close-fit questions for the other person wait until Interested, then go on that match lane so they stay tied to the pair. After Interested, Python opens the pair and runs a `request_ready` kickoff on the opener's new match lane. `ask_clarifying_question` stays on Your request as `pending_questions` tagged with `candidate_id` and is asked after Strong/Close fit cards. After they answer, `evaluate_pair` re-screens those stored ids (no new search for that answer). A leftover live pair becomes a Close fit card; it is not messaged from Your request. `update_request` patches the brief without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
+Session chat is private; `agent_matches.notebook` is shared agent memory (facts, outstanding, agent_note, next_action) and is **not** shown to humans. `think` is a this-turn plan only. Anything the next turn must remember goes in `update_notebook`. `index_request` starts a background pipeline (index, then search and pair evaluation). The broker wakes once when that pipeline finishes. `search_counterparties` starts the search-and-screen job when the brief is already indexed. Pair evaluation also applies request-lane `view_filters` set by `evaluate_pair`. The agent replies after starting the work. `message_party` queues a **separate** broker turn after this request commits, on the other party's **match lane** only. It is refused until Interested has opened a match. Close-fit questions for the other person wait until Interested, then go on that match lane so they stay tied to the pair. After Interested, Python opens the pair and runs a `request_ready` kickoff on the opener's new match lane. `ask_clarifying_question` stays on Your request as `pending_questions` tagged with `candidate_id` and is asked after Strong/Close fit cards. After they answer, store reusable facts with `update_request_details` and `evaluate_pair` re-screens those stored ids (no new search for that answer; evaluate does not need a fresh index). A leftover live pair becomes a Close fit card; it is not messaged from Your request. `update_search_brief` patches the searchable core without a full rewrite. If a user skips follow-up questions or answers only some of them, the agent keeps working with what it has and may ask a skipped detail later only if a live match actually needs it.
 
-Product rules live in `docs/REQUIREMENTS.md` (newest: REQ-016 — public landing and privacy pages for OAuth).
+Product rules live in `docs/REQUIREMENTS.md` (newest: REQ-019 — structured parse retry is per call; one empty pair does not fail the screen).
 
 Public marketing lives at `/` (`frontend/app/page.tsx`). Privacy policy lives at `/privacy` for Google OAuth consent. Public site and app are `broker-ai.app`. Login still at `/login`; the app remains `/app`. User-facing copy must not mention Vercel, staging hosts, or that the domain is pending.
 
@@ -112,8 +112,9 @@ Statuses are intentionally short:
 Bound schemas describe what each tool does. The broker chooses among them.
 
 - `think` — private working note for this turn
-- `save_request` — full create/rewrite of the brief
-- `update_request` — patch only changed fields
+- `save_request` — write the five-key search brief; existing extras stay
+- `update_search_brief` — patch only changed search-core fields; extras stay; clears the index
+- `update_request_details` — add or replace named extras for evaluate and mediation; does not re-index
 - `index_request` — start the background index then search and pair screen; the broker wakes when that pipeline finishes
 - `search_counterparties` — start a background search and pair screen of the indexed brief; return a count later, not candidate briefs
 - `evaluate_pair` — re-screen stored or last-search ids; optional `filters` is a view overlay (`view_filters`) that does not change the saved brief

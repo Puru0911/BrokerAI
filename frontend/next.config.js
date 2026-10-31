@@ -6,13 +6,16 @@ const nextConfig = {
   },
 
   async rewrites() {
+    if (process.env.NODE_ENV === "production") {
+      return []
+    }
     return [
       {
-        source: '/broker/:path*',
-        destination: 'http://127.0.0.1:8000/broker/:path*',
-      },
-    ];
-  },
+        source: "/broker/:path*",
+        destination: "http://127.0.0.1:8000/broker/:path*"
+      }
+    ]
+  }
 };
 
 module.exports = nextConfig;

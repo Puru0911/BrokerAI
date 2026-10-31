@@ -321,3 +321,65 @@ Each entry is the product rule, the broken flow, what code changed, and the fix.
 **Code change:** `frontend/app/page.tsx`, `frontend/app/privacy/page.tsx`, `frontend/components/layout/site-chrome.tsx`, `frontend/components/marketing/product-preview.tsx`, `frontend/lib/site.ts`, `frontend/lib/marketing-copy.ts`, login shell legal line, `robots.ts` / `sitemap.ts`.
 
 **Fix:** Google reviewers and new visitors can read what the broker is and what data it uses.
+
+---
+
+## REQ-017 — Search brief vs request details; evaluate without re-index
+
+**Date:** 2026-10-27
+
+**Requirement:** A living request has one JSON blob (`agent_requests.details`). Vector search is a five-key projection of that blob: `domain`, `objective`, `hard_constraints`, `soft_preferences`, `freeform_notes`. Everything else the agent adds is request context for evaluation, Q&A, and mediation. Patching the search core is `update_search_brief` (or a rewrite with `save_request`); it clears `indexed_at` and `view_filters`. Storing facts, answers, secondary constraints, or background is `update_request_details`; it does not re-index, does not clear `indexed_at`, and does not start a screen. Extra keys never enter the Chroma document. Pair screening and `answer_match_question` read the full public details. `JOB_EVALUATE` runs without `indexed_at`; `JOB_SCREEN` and `search_counterparties` still require an indexed brief. The match notebook stays for pair process, outstanding questions, and pair-only concessions. Reusable person facts go on details, not the notebook. Same-turn `update_notebook` plus `update_request_details` is allowed. Recording details does not auto-evaluate and does not tell the model to evaluate after the write.
+
+**What was wrong:** One store and one `update_request` tool treated every new fact as a brief rewrite. `indexed_at` cleared, then `evaluate_pair` in the same turn failed with "This brief is not indexed." Failed evaluate jobs woke the broker and retried, looping the user-visible re-check. Extra context either never persisted (patch rebuilt canonical fields and dropped unknown keys) or would have been embedded into search if kept on the same document.
+
+**Flow change:**
+
+1. Who to retrieve is the search brief. Index only after `save_request` or `update_search_brief`.
+2. Facts, answers, and secondary constraints are named extras on the same details blob. They help evaluate and mediation. They do not change retrieval until the brief itself changes.
+3. After a this-user answer, store it on details. Re-screen stored ids with `evaluate_pair` when the broker decides; that job no longer waits for a new index.
+4. Pair-only concessions and process stay in the match notebook.
+
+**Code change:** `living_request.py` (`search_brief_dict`, `living_request_dict`, `apply_search_brief_patch`, `apply_details_extra_patch`), `request_tools.py` (`update_search_brief`, `update_request_details`; `budget`/`location`/`timeline` leave the canonical schema), `indexer.py` (five-key document), `request_jobs.py` (`JOB_EVALUATE` before the index gate), `titles.py`, `prompts.py`, `runtime.py`. Tests in `test_living_request.py`, `test_request_jobs.py`, `test_evaluate.py`, `test_prompts.py`, `test_titles.py`.
+
+**Fix:** A hometown or rate answer can be stored and used to re-score a stored pair without dropping the request from the index. Search still only sees the five-key brief.
+
+---
+
+## REQ-018 — Failed jobs do not loop; screener JSON is an instance
+
+**Date:** 2026-10-27
+
+**Requirement:** A failed background job wakes the broker once. That `request_ready` turn must not enqueue another job of the same kind. `background_job` includes the clipped `error` and `retry_allowed: false`. The person writing again may enqueue freely. Screen/evaluate JSON parse failures still retry once inside the same job, with a correction that asks for a filled instance. Structured LLM calls send an instance hint, not a JSON Schema dump. A schema-shaped object with `properties` / `const` is unwrapped into values before Pydantic validate.
+
+**What was wrong:** Failed jobs woke the broker with `retry that job` and an empty error field. The agent queued a new job of the same kind. Failed jobs are not open, so coalesce did not apply, and the chain ran until stopped by hand. Pair screening also appended LangChain JSON Schema format instructions; the model often echoed `properties` / `enum` instead of a filled `PairEvaluation`, which failed Pydantic and started that loop.
+
+**Flow change:**
+
+1. `request_ready` + `status=failed` refuses the same job kind. A later `user_message` may start that kind again.
+2. Prompt: a failed job is finished; do not start the same job this turn; continue from `suggested_matches` or say you will try again.
+3. Packet: real clipped error, `retry_allowed` false on failure.
+4. Screener: instance JSON only. Silent retry adds a short “not a schema” line. Unwrap salvage when the model nested values under `properties`.
+
+**Code change:** `request_jobs.py` (`JobRetryBlocked`, `job_packet`, silent-retry hint), `request_tools.py` / `search_tools.py` / `runtime.py`, `prompts.py`, `llm/client.py` (`unwrap_schema_echo`, `parse_structured_output`). Tests in `test_request_jobs.py`, `test_prompts.py`, `test_llm_client.py`.
+
+**Fix:** A parse miss or worker error cannot enqueue the same kind forever. A schema-echo that still has values can screen instead of failing the job.
+
+---
+
+## REQ-019 — Structured parse retry is per call; one empty pair does not fail the screen
+
+**Date:** 2026-10-27
+
+**Requirement:** A structured LLM call that fails Pydantic or JSON parse retries once in that same call, with the previous output, the real validation error, and the required instance keys. The job worker does not rerun the whole screen or evaluate pipeline for a parse miss. Pair evaluation isolates failures: a candidate that still cannot be scored is skipped and listed on `background_job.errors`; scored pairs are stored. If every pair in the set still fails to parse, the job fails and `retry_allowed` stays false. Do not invent verdict or score. Do not re-run retrieval because one pair was empty.
+
+**What was wrong:** An empty `{}` PairEvaluation failed `asyncio.gather` for the whole screen. The job-level silent retry discarded the completion and asked only for “not a JSON Schema,” so the second attempt could not correct missing `verdict` / `score` / `recommended_action`. One unusable score failed every candidate. The broker then saw a failed job and could not present the pairs that would have scored.
+
+**Flow change:**
+
+1. `invoke_structured_model` tries twice. The second human includes previous output, the parse error, and required keys.
+2. `evaluate_pairs` keeps successful scores and records per-candidate errors.
+3. A screen or evaluate job succeeds when at least one pair scored. Pair errors are on the packet. All-pair parse failure still fails the job.
+
+**Code change:** `llm/client.py` (`invoke_structured_model` parse retry, `structured_retry_instruction`), `evaluate.py` (`evaluate_pairs` `return_exceptions`), `screening.py`, `request_jobs.py` (retired `_run_kind_with_parse_retry`), `job_packet.errors`, `prompts.py`. Tests in `test_llm_client.py`, `test_evaluate.py`, `test_suggestions.py`, `test_request_jobs.py`, `test_prompts.py`.
+
+**Fix:** One empty screener JSON cannot wipe a screen that already has good scores. The retry can correct missing keys instead of repeating a generic schema hint.

@@ -106,6 +106,8 @@ def test_lane_label_hides_identity_until_accept() -> None:
     assert match_lane_label(other=other, other_profile=profile, identity_open=True) == "Priya Sharma · Baner"
     unnamed = _request(title="New broker request", details={"domain": "housing", "location": "Aundh"})
     assert match_lane_label(other=unnamed, other_profile=None, identity_open=False) == "Housing · Aundh"
+    listed = _request(details={"domain": "housing", "location": ["Baner", "Aundh"]})
+    assert match_lane_label(other=listed, other_profile=None, identity_open=False) == "Housing · Baner"
 
 
 def test_lane_label_prefers_brief_over_first_message_title() -> None:

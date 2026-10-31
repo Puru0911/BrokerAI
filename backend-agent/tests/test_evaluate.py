@@ -1,9 +1,9 @@
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 
 from app.db.models import AgentRequest
-from app.services.evaluate import PairEvaluation, clarifying_questions_from, evaluate_pairs
+from app.services.evaluate import PairEvaluation, clarifying_questions_from, evaluate_pair, evaluate_pairs
 
 
 def test_pair_evaluation_keeps_ask_clarifying_question() -> None:
@@ -99,10 +99,112 @@ async def test_evaluate_pairs_stamps_each_candidate() -> None:
         )
 
     with patch("app.services.evaluate.evaluate_pair", side_effect=fake_evaluate) as mocked:
-        results = await evaluate_pairs(
+        results, errors = await evaluate_pairs(
             source,
             [first, second],
             view_filters=["Kharadi", "furnished"],
         )
     assert [item.candidate_id for item in results] == ["cand-1", "cand-2"]
+    assert errors == []
     assert mocked.await_args_list[0].kwargs["view_filters"] == ["Kharadi", "furnished"]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_pair_sends_extra_details_to_the_screener() -> None:
+    source = AgentRequest(
+        id="req-a",
+        session_id="sess-a",
+        user_id="user-a",
+        title="A",
+        summary="A",
+        details={
+            "objective": "Need a designer",
+            "domain": "hiring",
+            "rate": "$45/hour",
+        },
+        status="open",
+    )
+    candidate = AgentRequest(
+        id="cand-1",
+        session_id="sess-1",
+        user_id="user-1",
+        title="B",
+        summary="B",
+        details={
+            "objective": "Looking for contract work",
+            "notice_period": "30 days",
+        },
+        status="open",
+    )
+    fake = AsyncMock(
+        return_value=PairEvaluation(
+            verdict="possible_match",
+            score=70,
+            recommended_action="ask_other_person",
+        )
+    )
+    with (
+        patch("app.services.evaluate.is_llm_configured", return_value=True),
+        patch("app.services.evaluate.invoke_structured_model", fake),
+    ):
+        await evaluate_pair(source, candidate)
+    payload = fake.await_args.kwargs["human_payload"]
+    assert payload["source_request"]["rate"] == "$45/hour"
+    assert payload["candidate_profile"]["notice_period"] == "30 days"
+    assert "budget" not in payload["source_request"]
+
+
+@pytest.mark.asyncio
+async def test_evaluate_pairs_keeps_successes_when_one_fails() -> None:
+    source = AgentRequest(
+        id="req-a",
+        session_id="sess-a",
+        user_id="user-a",
+        title="A",
+        summary="A",
+        details={},
+        status="open",
+    )
+    first = AgentRequest(
+        id="cand-1",
+        session_id="sess-1",
+        user_id="user-1",
+        title="B",
+        summary="B",
+        details={},
+        status="open",
+    )
+    second = AgentRequest(
+        id="cand-2",
+        session_id="sess-2",
+        user_id="user-2",
+        title="C",
+        summary="C",
+        details={},
+        status="open",
+    )
+
+    async def fake_evaluate(
+        source_request,
+        candidate_request,
+        retrieval_distance=None,
+        prior_events=None,
+        view_filters=None,
+    ):
+        if candidate_request.id == "cand-2":
+            raise ValueError(
+                "Failed to parse PairEvaluation from completion {}. Got: 3 validation errors"
+            )
+        return PairEvaluation(
+            verdict="strong_match",
+            score=90,
+            recommended_action="open_match",
+            candidate_id=candidate_request.id,
+        )
+
+    with patch("app.services.evaluate.evaluate_pair", side_effect=fake_evaluate):
+        results, errors = await evaluate_pairs(source, [first, second])
+    assert [item.candidate_id for item in results] == ["cand-1"]
+    assert len(errors) == 1
+    assert errors[0].startswith("cand-2:")
+    assert "Failed to parse PairEvaluation" in errors[0]

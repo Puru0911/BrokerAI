@@ -19,6 +19,8 @@ from app.agents.prompts import (
     TOOL_PRESENT_CANDIDATES,
     TOOL_REQUEST_ATTACHMENT,
     TOOL_SAVE_REQUEST,
+    TOOL_UPDATE_REQUEST_DETAILS,
+    TOOL_UPDATE_SEARCH_BRIEF,
     TOOL_EVALUATE_PAIR,
     TOOL_SEARCH_COUNTERPARTIES,
     TOOL_SHARE_ATTACHMENT,
@@ -26,7 +28,6 @@ from app.agents.prompts import (
     TOOL_SKIP_MATCH,
     TOOL_THINK,
     TOOL_UPDATE_NOTEBOOK,
-    TOOL_UPDATE_REQUEST,
     USER_MESSAGE_INSTRUCTION,
 )
 
@@ -42,7 +43,8 @@ _SECTION_HEADERS = (
 _ALL_TOOLS = (
     "think",
     "save_request",
-    "update_request",
+    "update_search_brief",
+    "update_request_details",
     "index_request",
     "get_request_snapshot",
     "search_counterparties",
@@ -122,7 +124,8 @@ def test_broker_prompt_states_purpose_and_capabilities() -> None:
     assert "== CONNECTING PEOPLE ==" not in BROKER_SYSTEM_PROMPT
     assert "== HOW TO DECIDE, EVERY TURN ==" not in BROKER_SYSTEM_PROMPT
     assert "shared across every match" in lowered
-    assert "patch it with update_request" in lowered
+    assert "update_search_brief" in lowered
+    assert "update_request_details" in lowered
     assert "background_job" in lowered
     assert "get_match_brief" in lowered
     assert "view_filters" in lowered
@@ -155,6 +158,8 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
     assert "pending_questions" in each
     assert "view_filters" in each
     assert "background_job" in each
+    assert "retry_allowed" in each
+    assert "could not be scored" in each
     work = BROKER_SYSTEM_PROMPT.split("== HOW YOU WORK ==")[1].split("==")[0].lower()
     assert "optional, not mandatory" in work
     assert "never treat a skipped question as a stop" in work
@@ -166,7 +171,9 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
     assert "together" in work
     assert "already shown" in work
     assert "at most one candidate" in work
-    assert "do not tell the user you restarted" in work
+    assert "retry_allowed is false" in work
+    assert "do not start the same job this turn" in work
+    assert "retry that job" not in work
     assert "several open matches" in work
     assert "in the background" in work
     assert "evaluate_pair filters" in work
@@ -174,7 +181,9 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
     assert "indexed brief" in work
     assert "this person's skip" in work
     assert "pipeline" in work
-    assert "index the brief" in work
+    assert "update_search_brief" in work
+    assert "update_request_details" in work
+    assert "does not reindex" in work
     assert "evaluate_pair" in work
     assert "do not present pending_clarify" in work
     assert "do not message_party for a close fit until" in work
@@ -183,11 +192,13 @@ def test_reply_rules_forbid_tool_leak_and_extra_questions() -> None:
 
 
 def test_tools_describe_effects_not_sequences() -> None:
-    assert "complete living brief" in TOOL_SAVE_REQUEST.lower()
-    assert "omitted" in TOOL_UPDATE_REQUEST.lower()
+    assert "search brief" in TOOL_SAVE_REQUEST.lower()
+    assert "omitted" in TOOL_UPDATE_SEARCH_BRIEF.lower()
+    assert "does not reindex" in TOOL_UPDATE_REQUEST_DETAILS.lower()
+    assert "does not change the search brief" in TOOL_UPDATE_REQUEST_DETAILS.lower()
     assert "private working note" in TOOL_THINK.lower()
     assert "broker only" in TOOL_UPDATE_NOTEBOOK.lower() or "humans never see" in TOOL_UPDATE_NOTEBOOK.lower()
-    assert "this person in this chat actually stated" in TOOL_UPDATE_NOTEBOOK.lower()
+    assert "pair-only" in TOOL_UPDATE_NOTEBOOK.lower()
     assert "search index" in TOOL_INDEX_REQUEST.lower() or "indexing" in TOOL_INDEX_REQUEST.lower()
     assert "background" in TOOL_SEARCH_COUNTERPARTIES.lower()
     assert "not candidate briefs" in TOOL_SEARCH_COUNTERPARTIES.lower()
@@ -233,7 +244,8 @@ def test_tools_describe_effects_not_sequences() -> None:
         [
             TOOL_THINK,
             TOOL_SAVE_REQUEST,
-            TOOL_UPDATE_REQUEST,
+            TOOL_UPDATE_SEARCH_BRIEF,
+            TOOL_UPDATE_REQUEST_DETAILS,
             TOOL_INDEX_REQUEST,
             TOOL_SEARCH_COUNTERPARTIES,
             TOOL_EVALUATE_PAIR,
@@ -267,8 +279,8 @@ def test_user_message_instruction_is_a_reply_brief() -> None:
     assert "ordinary language" in lowered
     assert "same language they used" in lowered
     assert "one question" not in lowered
-    assert "index the brief" in lowered
-    assert "evaluate_pair" in lowered
+    assert "update_request_details" in lowered
+    assert "update_search_brief" in lowered
     assert "tool" in lowered
     assert "classify" not in lowered
     assert "accept_match" not in lowered
@@ -283,7 +295,9 @@ def test_trigger_instructions_state_the_situation() -> None:
     assert "close fit" in REQUEST_READY_INSTRUCTION.lower()
     assert "follow recommended" not in REQUEST_READY_INSTRUCTION.lower()
     assert "background_job" in REQUEST_READY_INSTRUCTION.lower()
-    assert "do not tell the user you restarted" in REQUEST_READY_INSTRUCTION.lower()
+    assert "retry_allowed is false" in REQUEST_READY_INSTRUCTION.lower()
+    assert "do not start the same job this turn" in REQUEST_READY_INSTRUCTION.lower()
+    assert "retry that job" not in REQUEST_READY_INSTRUCTION.lower()
     assert "do not start another search this turn" in REQUEST_READY_INSTRUCTION.lower()
     assert "clarify" in REQUEST_READY_INSTRUCTION.lower()
     assert "gone quiet" in MATCH_TIMEOUT_INSTRUCTION.lower()
@@ -312,6 +326,7 @@ def test_helper_prompts_use_spec_contracts() -> None:
     assert "next_questions" in PAIR_EVALUATOR_PROMPT
     assert "clarifying_questions" in PAIR_EVALUATOR_PROMPT
     assert "source_relative_brief" in PAIR_EVALUATOR_PROMPT
+    assert "not a JSON Schema" in PAIR_EVALUATOR_PROMPT
     assert "view_filters" in PAIR_EVALUATOR_PROMPT
     assert "overlay" in PAIR_EVALUATOR_PROMPT.lower()
     assert "buy / rent" not in PAIR_EVALUATOR_PROMPT.lower()

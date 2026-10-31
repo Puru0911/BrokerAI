@@ -65,6 +65,15 @@ async def test_generate_request_copy_uses_llm() -> None:
     assert kwargs["use_reasoning"] is False
     assert kwargs["max_tokens"] == 400
     assert kwargs["human_payload"]["objective"].startswith("Need a 1BHK")
+    assert "budget" not in kwargs["human_payload"]
+    assert "location" not in kwargs["human_payload"]
+    assert set(kwargs["human_payload"]) == {
+        "objective",
+        "hard_constraints",
+        "soft_preferences",
+        "domain",
+        "freeform_notes",
+    }
 
 
 @pytest.mark.asyncio

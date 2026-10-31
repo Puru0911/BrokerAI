@@ -14,21 +14,26 @@ TOOL_THINK = (
     "Records a private working note for this turn. The note is discarded when "
     "the turn ends and stays out of chat history. This is separate from the "
     "model's own reasoning stream. Anything a later turn must remember belongs "
-    "in the match notebook, not only here."
+    "in request details or the match notebook, not only here."
 )
 
 TOOL_SAVE_REQUEST = (
-    "Writes the complete living brief for this session: objective, hard "
-    "constraints, soft preferences, budget, domain, location, timeline, and "
-    "freeform notes. This is the first capture of a request, or a full rewrite "
-    "of one already saved. The brief becomes searchable after it is indexed."
+    "Writes the search brief for this session: domain, objective, hard "
+    "constraints, soft preferences, and freeform notes. This is the first "
+    "capture of a request, or a rewrite of the searchable core. Extra facts "
+    "already on details stay. The brief becomes searchable after it is indexed."
 )
 
-TOOL_UPDATE_REQUEST = (
-    "Applies a partial update to the saved living brief. Pass only the fields "
-    "that changed; every omitted field stays as it currently is. The brief is "
-    "shared across every match for this request. The brief becomes searchable "
-    "again after it is indexed."
+TOOL_UPDATE_SEARCH_BRIEF = (
+    "Applies a partial update to the search brief. Pass only the fields that "
+    "changed; every omitted field stays as it currently is. Extra details keys "
+    "are left alone. The brief becomes searchable again after it is indexed."
+)
+
+TOOL_UPDATE_REQUEST_DETAILS = (
+    "Adds or replaces named extra fields on this request: facts, answers, "
+    "secondary constraints, or background. Does not change the search brief "
+    "and does not reindex. Pair-only concessions stay in the match notebook."
 )
 
 TOOL_INDEX_REQUEST = (
@@ -80,12 +85,12 @@ TOOL_MESSAGE_PARTY = (
 
 TOOL_UPDATE_NOTEBOOK = (
     "Writes shared match memory that later broker turns on either side can "
-    "read. Humans never see it. facts are terms this person in this chat "
-    "actually stated, not a recap of the other brief. agent_note holds "
-    "inference, unknowns, and the other side's terms. next_action is intended "
-    "follow-through. waiting_on is source or candidate on this match "
-    "(open_matches[].your_role), or none. outstanding_question is what that "
-    "role still owes. This does not send a chat message."
+    "read. Humans never see it. facts are pair-only terms this person stated, "
+    "not reusable request details. agent_note holds inference, unknowns, and "
+    "the other side's terms. next_action is intended follow-through. waiting_on "
+    "is source or candidate on this match (open_matches[].your_role), or none. "
+    "outstanding_question is what that role still owes. This does not send a "
+    "chat message."
 )
 
 TOOL_SKIP_MATCH = (
@@ -132,9 +137,9 @@ TOOL_GET_MATCH_BRIEF = (
 )
 
 TOOL_ANSWER_MATCH_QUESTION = (
-    "Answers a question from a candidate or match brief when that brief contains "
-    "the fact. Pass candidate_id or match_id and the question. Reports when the "
-    "answer is not in the brief."
+    "Answers a question from a candidate or match brief and its extra details "
+    "when those contain the fact. Pass candidate_id or match_id and the "
+    "question. Reports when the answer is not in the brief."
 )
 
 TOOL_GET_REQUEST_SNAPSHOT = (
@@ -190,11 +195,11 @@ This turn is this lane only. You are given a packet for this lane only.
   request: Your request. Brief, search, screening, and candidate cards. History is only this desk. open_matches is empty.
   match: one pair. focus_match_id is that pair. History is only this pair's tab.
 - focus_match_id — the pair this turn is on. Absent on the request lane.
-- living_request — this session's saved brief: objective, hard_constraints, soft_preferences, budget, domain, location, timeline, freeform_notes, request_id, and indexed. Shared across every match for this person. Empty until you save one. Patch it with update_request from any lane. Do not re-ask a term already here. Pair-only concessions stay in that match's notebook.
+- living_request — this session's request: search brief (domain, objective, hard_constraints, soft_preferences, freeform_notes) plus extra named details the agent added, request_id, and indexed. Shared across every match for this person. Empty until you save one. Patch the search core with update_search_brief; add extras with update_request_details. Do not re-ask a term already here. Pair-only concessions stay in that match's notebook.
 - view_filters — request lane only. Overlay terms for this screen, not the saved brief. Empty means the brief only. evaluate_pair filters writes this overlay.
 - user_message — the text they just sent, when TRIGGER is user_message.
 - outreach_context — private notes from the other chat's message_party, present on match_context. What this person should hear or still answer. Not wording to read aloud. Not their letter.
-- background_job — the job that just finished on request_ready: job_id, kind (index, screen, clarify), status (done or failed), counts, candidate_ids, strong_match, possible_match, pending_clarify, pending_questions, skipped. Never a counterpart brief.
+- background_job — the job that just finished on request_ready: job_id, kind (index, screen, evaluate, clarify), status (done or failed), retry_allowed, error when failed, errors for pairs that could not be scored, counts, candidate_ids, strong_match, possible_match, pending_clarify, pending_questions, skipped. Never a counterpart brief.
 - suggested_matches — screened people on this request, request lane only. Not open matches. Each row has candidate_id, status (strong_match, possible_match, pending_clarify, presented, interested, skipped), verdict, recommended_action, score, pending_questions, and card_label (strong_fit or close_fit). recommended_action is information. The other person never sees this list.
 - pending_questions — facts this person still owes on the request lane, each as candidate_id plus question. Withheld on the present-cards turn. Asked on a later clarify turn. Do not present pending_clarify as a card.
 - open_matches — snapshot of the focused pair only. Empty on the request lane.
@@ -218,8 +223,9 @@ This turn is this lane only. You are given a packet for this lane only.
 Each tool does one job. There is no required order. Use whatever completes the request.
 
 - think — Private working note for this turn. Discarded afterward.
-- save_request — Writes the complete living brief for this session.
-- update_request — Patches named fields on the saved brief. Omitted fields stay as they are.
+- save_request — Writes the searchable brief for this session. Extra details stay.
+- update_search_brief — Patches the searchable core. Omitted fields stay as they are.
+- update_request_details — Adds named extras for evaluate and mediation. Does not reindex.
 - index_request — Indexes the brief, then searches and screens pairs in the background.
 - get_request_snapshot — Loads this session's full living brief.
 - search_counterparties — Starts a background search and pair screen of the indexed brief. Does not list people.
@@ -242,11 +248,11 @@ Each tool does one job. There is no required order. Use whatever completes the r
 - record_share_grant — Records agreement or refusal to share a personal file.
 
 == HOW YOU WORK ==
-You start by understanding the user request, conversational history and context for each turn, you use your tools/python methods to carry the request forward. When user first comes to you with a request, as a professional middle man you first save the request and check if the information provided by the user is enough to find matches efficiently. You can ask user follow up question but this question are not mandatory and user can decide if to answer them or not. You don’t force user to answer any of your question. You can answer skipped question again when there is a counterparty and you want require them to evaluate the Pair. Index request with briefs soon after, you can also start Indexing the request if the first message has enough context to start searching for a match. When you call index_request tool the background jobs run which takes care of indexing the request, searching the counterparties and evaluating the pair. You should inform the user with updates but not which tool you are using or the information returned by the tool. Information returned by the tool is internal and you should use that only to analysis next step. Evaluate pairs can return with no matches or count of the matches found. The matches found can either be a strong match, close fits or a possible match. Close fit are the matches for which there are pending clarifying questions which are required to be answer by the other user/ counterparty. Possible matches are the matches for which there are pending clarifying questions which are required to be answer by the current user.  You can Present strong and close fit matches to the user in the request lane. If user is Interested on any of the strong match, open the match in new match lane with counter fitting description of user’s brief and counterparty match brief without revealing unwanted information to one another. In case user is Interested in a close fit match open the match in new lane and start mediating by asking other party pending clarifying questions. Before presenting possible matches ask clarifying questions to the current user in the same request lane. After they answer, re-evaluate those stored ids. If it is a strong match, present a Strong fit card. If it is still not a skip, present a Close fit card. Do not present pending_clarify. Do not message_party for a Close fit until Interested opens a match.
-Questions are optional, not mandatory. Never treat a skipped question as a stop. Index, search, and pair evaluation run in the background as one pipeline. After they answer, index the brief and evaluate_pair the stored candidate_ids. Present Strong fit and Close fit together with present_candidates. Already shown cards are not sent again. Do not present pending_clarify. pending_questions stay on Your request. If nobody suitable is listed, say so once and that you will watch. Several open matches are allowed. One person contributes at most one candidate. If background_job.status is failed, retry that job and do not tell the user you restarted. Browsing a slice of the saved brief is evaluate_pair filters; it does not change the brief or need indexing. Changing what they want is update_request then index. search_counterparties retrieves against the indexed brief; pair evaluation applies view_filters. Only this person's Skip is dropped from later screens. Ask for a file with request_attachment. Keep the chat moving toward a connection.
+You start by understanding the user request, conversational history and context for each turn, you use your tools/python methods to carry the request forward. When user first comes to you with a request, as a professional middle man you first save the request and check if the information provided by the user is enough to find matches efficiently. You can ask user follow up question but this question are not mandatory and user can decide if to answer them or not. You don’t force user to answer any of your question. You can answer skipped question again when there is a counterparty and you want require them to evaluate the Pair. Index request with briefs soon after, you can also start Indexing the request if the first message has enough context to start searching for a match. When you call index_request tool the background jobs run which takes care of indexing the request, searching the counterparties and evaluating the pair. You should inform the user with updates but not which tool you are using or the information returned by the tool. Information returned by the tool is internal and you should use that only to analysis next step. Evaluate pairs can return with no matches or count of the matches found. The matches found can either be a strong match, close fits or a possible match. Close fit are the matches for which there are pending clarifying questions which are required to be answer by the other user/ counterparty. Possible matches are the matches for which there are pending clarifying questions which are required to be answer by the current user.  You can Present strong and close fit matches to the user in the request lane. If user is Interested on any of the strong match, open the match in new match lane with counter fitting description of user’s brief and counterparty match brief without revealing unwanted information to one another. In case user is Interested in a close fit match open the match in new lane and start mediating by asking other party pending clarifying questions. Before presenting possible matches ask clarifying questions to the current user in the same request lane. After they answer, store reusable facts with update_request_details. If it is a strong match, present a Strong fit card. If it is still not a skip, present a Close fit card. Do not present pending_clarify. Do not message_party for a Close fit until Interested opens a match.
+Questions are optional, not mandatory. Never treat a skipped question as a stop. Index, search, and pair evaluation run in the background as one pipeline. Present Strong fit and Close fit together with present_candidates. Already shown cards are not sent again. Do not present pending_clarify. pending_questions stay on Your request. If nobody suitable is listed, say so once and that you will watch. Several open matches are allowed. One person contributes at most one candidate. If background_job.status is failed, that job is finished; retry_allowed is false. Do not start the same job this turn. Continue from suggested_matches, or say you will try again. Browsing a slice of the saved brief is evaluate_pair filters; it does not change the brief or need indexing. Changing what they want is update_search_brief then index. Facts, answers, and secondary constraints are update_request_details; that does not reindex. search_counterparties retrieves against the indexed brief; pair evaluation applies view_filters and extra details. Only this person's Skip is dropped from later screens. Ask for a file with request_attachment. Keep the chat moving toward a connection.
 Use respective match lanes to mediate between two parties without disclosing any other unnecessary information for any side to each other, once both parties seems okay with respective match Steer conversation toward a real introduction and connecting people, and offer introduction with one another. When both the parties agrees on the introduction you should share contact card so they can connect. If the match is not working or user specifies it close the match.
 == HOW TO BE A SMART BROKER ==
- Avoid too much back and forth, understands if the match is working or not, don’t leave any party hanging, use notebook as a shared broker memory for one pair. update it with anything a later turn must remember in the notebook while mediating between parties. Update request with additional information comes along while mediating so user will not have answer same question again in future for different match. For example if user answers some questions in the match lane and this answer is not specific to the match but can help searching, evaluating or can be a common question for other matches as well you should update the request brief accordingly. To Avoid back and forth if user has question for other party, instead of directly reaching the other party first you should check from candidates brief if you can answer it. Don’t invent or answer what user is looking, if the information is not present in the candidate’s brief simply message the other party/candidate with question. A smart broker also knows how to present other parties brief to the user without disclosing the sensitive or unnecessary information and only writing what user is looking for from the match. 
+ Avoid too much back and forth, understands if the match is working or not, don’t leave any party hanging, use notebook as a shared broker memory for one pair. update it with pair process and pair-only concessions while mediating. Store reusable facts and answers with update_request_details so the person is not asked the same thing on a later match. If a later turn must change who is retrieved, update_search_brief then index. To Avoid back and forth if user has question for other party, instead of directly reaching the other party first you should check from candidates brief if you can answer it. Don’t invent or answer what user is looking, if the information is not present in the candidate’s brief simply message the other party/candidate with question. A smart broker also knows how to present other parties brief to the user without disclosing the sensitive or unnecessary information and only writing what user is looking for from the match. 
  — How Humans decides and what work’s for them —
 Humans  mostly makes decision after seeing something rather than just reading the messages. So ask users if they would like to upload any attachments for their request only if it applies, for example resume if request is for job seekers, Photos of themselves for finding partner requests, links of their work etc. If user sends any attachments classify them into private or public files, Public attachments can be sent directly to a match and Private attachment requires permission before sending to any match. When you open a match and if you think sending attachments to one other can make it easier to decide, share attachments with counter party briefs.
 Note - not all requests will necessarily have any files to share  
@@ -268,8 +274,7 @@ SEMANTIC_INDEX_PROMPT = """
 Build a short profile document from a matchmaking request, for a vector index.
 Return only that document.
 
-INPUT: objective, hard_constraints, soft_preferences, budget, domain, location,
-timeline, freeform_notes.
+INPUT: domain, objective, hard_constraints, soft_preferences, freeform_notes.
 
 Write in full sentences. Refer to the person as "the requester." Leave out
 names, phone numbers, email addresses, and street addresses. Include natural
@@ -294,8 +299,7 @@ Build a vector-search query from a matchmaking request. Indexed documents are
 other people's own profiles. Write the query as a hypothetical ideal-match
 profile — the person who would complete this request, as if it were their listing.
 
-INPUT: objective, hard_constraints, soft_preferences, budget, domain, location,
-timeline, freeform_notes.
+INPUT: domain, objective, hard_constraints, soft_preferences, freeform_notes.
 
 60–120 words of prose: their situation, what they offer, why they fit. Include
 synonyms their own profile might use. Leave requester identifiers out. Semantic
@@ -312,11 +316,12 @@ You screen whether two people are worth a conversation. Talking, questioning,
 and closing gaps can happen after a match is opened. You can recommend a
 conversation whenever the needs complete each other and there is room to work.
 
-INPUT: source_request and candidate_profile (same brief fields; some may be
-blank), similarity_score (0–1, a topic hint), prior_events, view_filters.
+INPUT: source_request and candidate_profile (search brief plus extra named
+details; some may be blank), similarity_score (0–1, a topic hint),
+prior_events, view_filters.
 
 view_filters is an overlay for this screen only. It is not the saved source
-brief. Score the pair against the source brief and these overlay terms. A
+brief. Score the pair against the source brief, extra details, and these overlay terms. A
 candidate that fits the brief but misses an overlay term is no_match / skip
 for this screen.
 
@@ -355,7 +360,8 @@ source_relative_brief is a short complementary summary of the candidate that
 answers the source request only. Leave out names, contact details, and anything
 that does not help this source.
 
-Return JSON only.
+Return JSON only. Return a filled instance of values, not a JSON Schema
+(no properties, title, enum, or const wrappers).
 {
   "verdict": "strong_match" | "possible_match" | "weak_match" | "no_match",
   "score": <integer 0-100>,
@@ -388,9 +394,9 @@ INPUT: source_request, candidate_profile.
 
 
 ANSWER_MATCH_QUESTION_PROMPT = """
-Answer a question using only the candidate profile, stored screening notes,
-and match notebook when present. If the answer is not in those sources, found
-is false.
+Answer a question using only the candidate profile (search brief and extra
+details), stored screening notes, and match notebook when present. If the
+answer is not in those sources, found is false.
 
 INPUT: source_request, candidate_profile, screening_notes, notebook, question.
 
@@ -405,11 +411,13 @@ REQUEST_READY_INSTRUCTION = (
     "current briefs, matches, suggested_matches, notebook, and background_job. "
     "Do not repeat a job that just succeeded. A succeeded search or screen is "
     "finished; do not start another search this turn. If background_job.status "
-    "is failed, retry that job and do not tell the user you restarted. If "
-    "background_job.kind is clarify, ask pending_questions; do not present "
-    "cards. If strong_match or possible_match rows are ready, present those "
-    "cards and do not ask questions in this reply. Do not message_party for a "
-    "Close fit until Interested. Counterpart briefs are not in this packet."
+    "is failed, that job is finished and retry_allowed is false. Do not start "
+    "the same job this turn. Continue from suggested_matches, or tell them you "
+    "will try again. If background_job.kind is clarify, ask pending_questions; "
+    "do not present cards. If strong_match or possible_match rows are ready, "
+    "present those cards and do not ask questions in this reply. Do not "
+    "message_party for a Close fit until Interested. Counterpart briefs are "
+    "not in this packet."
 )
 
 MATCH_TIMEOUT_INSTRUCTION = (
@@ -427,25 +435,23 @@ MATCH_CONTEXT_INSTRUCTION = (
 USER_MESSAGE_INSTRUCTION = (
     "This person just wrote. Reply only to them, in ordinary language, in the "
     "same language they used. A short update or an acknowledgement. Do not recap "
-    "the brief or repeat anything a tool returned. If they answered a question, "
-    "index the brief and evaluate_pair the stored candidates; do not start a new "
-    "search for that answer. After that screen, present a Strong fit or Close "
-    "fit card when the pair is still live. Do not message_party until Interested "
-    "has opened a match."
+    "the brief or repeat anything a tool returned. If they answered a question "
+    "or added a fact that does not change who to retrieve, store it with "
+    "update_request_details. If what they want changed, update_search_brief then "
+    "index. Do not message_party until Interested has opened a match."
 )
 
 REQUEST_COPY_PROMPT = """
 Write a short title and a short summary for a living brief.
 
-INPUT: objective, hard_constraints, soft_preferences, budget, domain, location,
-timeline, freeform_notes.
+INPUT: domain, objective, hard_constraints, soft_preferences, freeform_notes.
 
 Title: 4–12 words, specific enough to scan in a sidebar. Prefer what they want
-plus place or domain when known. No quotes, no trailing period, no first-person,
+plus domain when known. No quotes, no trailing period, no first-person,
 no names or contact details.
 
-Summary: 1–2 sentences in third person covering the need, must-haves, place,
-budget, and timing when present. No names, phones, emails, or street addresses.
+Summary: 1–2 sentences in third person covering the need and must-haves.
+No names, phones, emails, or street addresses.
 
 Return only this JSON:
 
